@@ -42,8 +42,10 @@ import {
   RefreshCw,
   School,
   Copy,
-  Download
+  Download,
+  Video
 } from "lucide-react";
+import { generateGoogleMeetLink } from "../lib/googleMeet";
 import {
   User,
   AttendanceRecord,
@@ -194,6 +196,8 @@ export default function TeacherDashboard({
   const [annAttachmentName, setAnnAttachmentName] = useState("");
   const [annAttachmentDataUrl, setAnnAttachmentDataUrl] = useState("");
   const [showCreateAnnModal, setShowCreateAnnModal] = useState(false);
+  const [annGeneratingMeet, setAnnGeneratingMeet] = useState(false);
+  const [annMeetError, setAnnMeetError] = useState("");
 
   // Assignments & Grading State
   const [assignments, setAssignments] = useState<ClassPost[]>([]);
@@ -532,6 +536,21 @@ export default function TeacherDashboard({
     }
   };
 
+  // Generate a real Google Meet link (via a Calendar event) and drop it
+  // straight into the announcement details textarea.
+  const handleGenerateMeetLink = async () => {
+    setAnnMeetError("");
+    setAnnGeneratingMeet(true);
+    try {
+      const link = await generateGoogleMeetLink(annTitle);
+      setAnnContent((prev) => (prev.trim() ? `${prev.trim()}\n\nJoin the meeting: ${link}` : `Join the meeting: ${link}`));
+    } catch (err) {
+      setAnnMeetError(err instanceof Error ? err.message : "Couldn't generate a Meet link. Try again.");
+    } finally {
+      setAnnGeneratingMeet(false);
+    }
+  };
+
   // Post Announcement
   const handleCreateAnnouncement = (e: React.FormEvent) => {
     e.preventDefault();
@@ -554,6 +573,7 @@ export default function TeacherDashboard({
     setAnnTitle("");
     setAnnSubject("");
     setAnnContent("");
+    setAnnMeetError("");
     setAnnAttachmentName("");
     setAnnAttachmentDataUrl("");
     setShowCreateAnnModal(false);
@@ -1761,7 +1781,7 @@ export default function TeacherDashboard({
                     <label className="block text-[11px] font-bold text-ink-soft">
                       Classroom Resource / Photo Attachment
                     </label>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <label className="flex items-center gap-2 px-3 py-2 text-xs font-bold text-violet-300 bg-violet-950/80 border border-violet-500/40 rounded-xl hover:bg-violet-900/80 cursor-pointer transition-colors">
                         <Paperclip className="h-4 w-4" />
                         <span>{annAttachmentName ? "Change Attachment" : "Attach File or Photo"}</span>
@@ -1772,6 +1792,19 @@ export default function TeacherDashboard({
                           className="hidden"
                         />
                       </label>
+                      <button
+                        type="button"
+                        onClick={handleGenerateMeetLink}
+                        disabled={annGeneratingMeet}
+                        className="flex items-center gap-2 px-3 py-2 text-xs font-bold text-emerald-300 bg-emerald-950/80 border border-emerald-500/40 rounded-xl hover:bg-emerald-900/80 cursor-pointer transition-colors disabled:opacity-60 disabled:cursor-wait"
+                      >
+                        {annGeneratingMeet ? (
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Video className="h-4 w-4" />
+                        )}
+                        <span>{annGeneratingMeet ? "Generating..." : "Generate Google Meet Link"}</span>
+                      </button>
                       {annAttachmentName && (
                         <button
                           type="button"
@@ -1786,6 +1819,12 @@ export default function TeacherDashboard({
                         </button>
                       )}
                     </div>
+                    {annMeetError && (
+                      <div className="mt-1.5 p-2.5 bg-rose-500/15 border border-rose-500/30 rounded-xl flex items-start gap-1.5 text-xs font-semibold text-rose-300">
+                        <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                        <span>{annMeetError}</span>
+                      </div>
+                    )}
                     {annAttachmentName && (
                       <div className="mt-1.5 p-2.5 bg-violet-500/15 border border-violet-500/30 rounded-xl flex items-center justify-between text-xs font-bold text-violet-300">
                         <span className="truncate">📎 {annAttachmentName}</span>
