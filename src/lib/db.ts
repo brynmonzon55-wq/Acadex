@@ -272,6 +272,12 @@ export async function logoutUser(userToSignOut?: User | null): Promise<void> {
   if (current) {
     updateUserActivity(current, true);
   }
+  isSubmissionsListenerAttached = false;
+  isDirectMessagesListenerAttached = false;
+  isSecurityLogsListenerAttached = false;
+  // Wipe private FERPA-protected cached data from shared browser storage
+  localStorage.removeItem(SUBMISSIONS_KEY);
+  localStorage.removeItem(MESSAGES_KEY);
   await firebaseSignOut(auth);
 }
 
@@ -508,6 +514,10 @@ export function forceReconnect(profile?: User | null): void {
     isDirectMessagesListenerAttached = false;
     attachDirectMessagesListener(profile.id);
   }
+  if (profile) {
+    isSubmissionsListenerAttached = false;
+    attachSubmissionsListener(profile);
+  }
 }
 
 /**
@@ -721,11 +731,17 @@ export function attachRealtimeListeners(): void {
   onSnapshot(collection(db, "class_posts"), (snapshot) => {
     const firestorePosts: ClassPost[] = [];
     snapshot.forEach((doc) => {
-      const data = doc.data() as ClassPost;
-      if (!data.id.startsWith("post-sample-")) {
-        firestorePosts.push(data);
+      const raw = doc.data() as any;
+      if (raw && !String(raw.id || "").startsWith("post-sample-")) {
+        const ts = getPostTime(raw);
+        const cleanPost: ClassPost = {
+          ...raw,
+          createdAt: ts > 0 ? new Date(ts).toISOString() : new Date().toISOString(),
+        };
+        firestorePosts.push(cleanPost);
       }
     });
+    firestorePosts.sort(comparePostsDesc);
     localStorage.setItem(POSTS_KEY, JSON.stringify(firestorePosts));
     notifyDbUpdated();
   }, (err) => {
@@ -746,24 +762,49 @@ export function attachRealtimeListeners(): void {
     isListenersAttached = false;
   });
 
-  // Sync "assignment_submissions" collection from Firestore
-  onSnapshot(collection(db, "assignment_submissions"), (snapshot) => {
-    const firestoreSubmissions: AssignmentSubmission[] = [];
-    snapshot.forEach((doc) => {
-      firestoreSubmissions.push(doc.data() as AssignmentSubmission);
-    });
-    localStorage.setItem(SUBMISSIONS_KEY, JSON.stringify(firestoreSubmissions));
-    notifyDbUpdated();
-  }, (err) => {
-    handleFirestoreError(err, OperationType.GET, "assignment_submissions");
-    isListenersAttached = false;
-  });
+  // NOTE: "assignment_submissions" and "direct_messages" are intentionally NOT synced here.
+  // The Firestore read rules protect student privacy (FERPA compliance) by only permitting
+  // a student to access their own submissions and grades. Approved teachers can view all
+  // submissions across classes. See attachSubmissionsListener() and attachDirectMessagesListener() below.
+}
 
-  // NOTE: "direct_messages" is intentionally NOT synced here. The Firestore
-  // read rule depends on resource.data.senderId/recipientId matching the
-  // caller, so an unfiltered collection listen is rejected outright. See
-  // attachDirectMessagesListener() below - it uses two where()-scoped
-  // queries instead, and needs the caller's resolved profile id first.
+let isSubmissionsListenerAttached = false;
+
+/**
+ * Subscribes to assignment_submissions with strict FERPA role gating.
+ * - Approved teachers receive all submissions for grading across their courses.
+ * - Students receive ONLY their own submissions, preventing exposure of classmates' grades or solutions.
+ */
+export function attachSubmissionsListener(user: User): void {
+  if (isSubmissionsListenerAttached) return;
+  isSubmissionsListenerAttached = true;
+
+  if (user.role === "teacher" && user.isApproved) {
+    onSnapshot(collection(db, "assignment_submissions"), (snapshot) => {
+      const firestoreSubmissions: AssignmentSubmission[] = [];
+      snapshot.forEach((doc) => {
+        firestoreSubmissions.push(doc.data() as AssignmentSubmission);
+      });
+      localStorage.setItem(SUBMISSIONS_KEY, JSON.stringify(firestoreSubmissions));
+      notifyDbUpdated();
+    }, (err) => {
+      handleFirestoreError(err, OperationType.GET, "assignment_submissions(teacher)");
+      isSubmissionsListenerAttached = false;
+    });
+  } else {
+    // For students: ONLY listen to submissions matching their own studentId (FERPA protection)
+    onSnapshot(query(collection(db, "assignment_submissions"), where("studentId", "==", user.id)), (snapshot) => {
+      const mySubmissions: AssignmentSubmission[] = [];
+      snapshot.forEach((doc) => {
+        mySubmissions.push(doc.data() as AssignmentSubmission);
+      });
+      localStorage.setItem(SUBMISSIONS_KEY, JSON.stringify(mySubmissions));
+      notifyDbUpdated();
+    }, (err) => {
+      handleFirestoreError(err, OperationType.GET, "assignment_submissions(student)");
+      isSubmissionsListenerAttached = false;
+    });
+  }
 }
 
 let isSecurityLogsListenerAttached = false;
@@ -1253,6 +1294,10 @@ export function joinClassByCode(code: string, student: User): ClassRoom {
   if (!cls) {
     throw new Error("invalid-code");
   }
+  // Check if student has been barred/blocked by the instructor
+  if (cls.blockedStudentIds?.some((id) => id.toLowerCase() === student.id.toLowerCase())) {
+    throw new Error("blocked");
+  }
   if (cls.studentIds.some((id) => id.toLowerCase() === student.id.toLowerCase())) {
     return cls; // already a member, nothing to do
   }
@@ -1273,12 +1318,61 @@ export function addStudentToClass(classId: string, studentId: string): ClassRoom
   return updated;
 }
 
+/** Kicks a student from the class roster. The student is free to rejoin with the code. */
 export function removeStudentFromClass(classId: string, studentId: string): ClassRoom | undefined {
   const cls = getClassById(classId);
   if (!cls) return undefined;
   const updated = { ...cls, studentIds: cls.studentIds.filter((id) => id.toLowerCase() !== studentId.toLowerCase()) };
   saveClass(updated);
   return updated;
+}
+
+/** Allows a student to voluntarily withdraw/leave an enrolled class section. */
+export function leaveClass(classId: string, studentId: string): ClassRoom | undefined {
+  return removeStudentFromClass(classId, studentId);
+}
+
+/**
+ * Blocks a student from a class section: kicks them out of studentIds and
+ * adds them to blockedStudentIds, barring them from rejoining with any code.
+ */
+export function blockStudentFromClass(classId: string, studentId: string): ClassRoom | undefined {
+  const cls = getClassById(classId);
+  if (!cls) return undefined;
+  const currentBlocked = cls.blockedStudentIds || [];
+  const updatedBlocked = currentBlocked.some((id) => id.toLowerCase() === studentId.toLowerCase())
+    ? currentBlocked
+    : [...currentBlocked, studentId];
+  const updated: ClassRoom = {
+    ...cls,
+    studentIds: cls.studentIds.filter((id) => id.toLowerCase() !== studentId.toLowerCase()),
+    blockedStudentIds: updatedBlocked,
+  };
+  saveClass(updated);
+  return updated;
+}
+
+/**
+ * Unblocks a student from a class section: removes them from blockedStudentIds,
+ * allowing them to rejoin with the class join code or be re-enrolled.
+ */
+export function unblockStudentFromClass(classId: string, studentId: string): ClassRoom | undefined {
+  const cls = getClassById(classId);
+  if (!cls) return undefined;
+  const currentBlocked = cls.blockedStudentIds || [];
+  const updated: ClassRoom = {
+    ...cls,
+    blockedStudentIds: currentBlocked.filter((id) => id.toLowerCase() !== studentId.toLowerCase()),
+  };
+  saveClass(updated);
+  return updated;
+}
+
+export function getBlockedStudentsForClass(classId: string): User[] {
+  const cls = getClassById(classId);
+  if (!cls || !cls.blockedStudentIds || cls.blockedStudentIds.length === 0) return [];
+  const users = getUsers();
+  return users.filter((u) => cls.blockedStudentIds?.some((bid) => bid.toLowerCase() === u.id.toLowerCase()));
 }
 
 export function deleteClass(classId: string): void {
@@ -1335,14 +1429,86 @@ export function calculateStudentStatsForClass(studentId: string, classId: string
 
 // --- Stream posts (announcements + assignments) ---
 
+/**
+ * Safely extracts a numeric millisecond timestamp for a ClassPost.
+ * Handles ISO strings, Firestore Timestamps ({ seconds, nanoseconds }),
+ * Date instances, and parses embedded timestamps from post IDs.
+ * Guarantees a valid number (never NaN).
+ */
+export function getPostTime(post: Partial<ClassPost> | null | undefined): number {
+  if (!post) return 0;
+
+  // 1. Direct number
+  if (typeof post.createdAt === "number" && !isNaN(post.createdAt) && post.createdAt > 0) {
+    return post.createdAt;
+  }
+
+  // 2. Firestore Timestamp instance with .toDate()
+  if (post.createdAt && typeof (post.createdAt as any).toDate === "function") {
+    try {
+      const ms = (post.createdAt as any).toDate().getTime();
+      if (!isNaN(ms) && ms > 0) return ms;
+    } catch {}
+  }
+
+  // 3. Serialized Firestore Timestamp object { seconds, nanoseconds }
+  if (post.createdAt && typeof post.createdAt === "object" && "seconds" in (post.createdAt as any)) {
+    const sec = Number((post.createdAt as any).seconds);
+    if (!isNaN(sec) && sec > 0) return sec * 1000;
+  }
+
+  // 4. Standard string date / ISO string
+  if (typeof post.createdAt === "string" && post.createdAt.trim()) {
+    const parsed = new Date(post.createdAt).getTime();
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+
+  // 5. Try extracting timestamp embedded in post ID (format: post-<timestamp>-<rand>)
+  if (typeof post.id === "string") {
+    const match = post.id.match(/^post-(\d{10,15})/);
+    if (match) {
+      const parsedIdTs = parseInt(match[1], 10);
+      if (!isNaN(parsedIdTs) && parsedIdTs > 0) return parsedIdTs;
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Robust comparator for posts in strict descending order (newest first).
+ * Uses getPostTime() and breaks ties with ID timestamps / string comparison.
+ */
+export function comparePostsDesc(a: ClassPost, b: ClassPost): number {
+  const timeA = getPostTime(a);
+  const timeB = getPostTime(b);
+  if (timeB !== timeA) {
+    return timeB - timeA;
+  }
+  return String(b.id || "").localeCompare(String(a.id || ""));
+}
+
 export function getPosts(): ClassPost[] {
   initDB();
   const data = localStorage.getItem(POSTS_KEY);
-  return data ? JSON.parse(data) : [];
+  if (!data) return [];
+  try {
+    const raw = JSON.parse(data);
+    if (!Array.isArray(raw)) return [];
+    return raw.map((p) => {
+      const ts = getPostTime(p);
+      return {
+        ...p,
+        createdAt: ts > 0 ? new Date(ts).toISOString() : (typeof p.createdAt === "string" ? p.createdAt : new Date().toISOString()),
+      };
+    });
+  } catch {
+    return [];
+  }
 }
 
 export function getAllPosts(): ClassPost[] {
-  return getPosts().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return getPosts().sort(comparePostsDesc);
 }
 
 export function getAnnouncements(): ClassPost[] {
@@ -1356,17 +1522,18 @@ export function getAssignments(): ClassPost[] {
 export function getPostsForClass(classId: string): ClassPost[] {
   return getPosts()
     .filter((p) => !classId || p.classId === classId || p.classId === "all" || !p.classId)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    .sort(comparePostsDesc);
 }
 
 export function createPost(input: Omit<ClassPost, "id" | "createdAt">): ClassPost {
+  const nowTs = Date.now();
   const post: ClassPost = {
     ...input,
-    id: `post-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    createdAt: new Date().toISOString(),
+    id: `post-${nowTs}-${Math.floor(Math.random() * 1000)}`,
+    createdAt: new Date(nowTs).toISOString(),
   };
-  const posts = getPosts();
-  posts.push(post);
+  const existing = getPosts().filter((p) => p.id !== post.id);
+  const posts = [post, ...existing].sort(comparePostsDesc);
   localStorage.setItem(POSTS_KEY, JSON.stringify(posts));
   
   const docData = cleanForFirestore(post);
@@ -1375,6 +1542,35 @@ export function createPost(input: Omit<ClassPost, "id" | "createdAt">): ClassPos
   });
   notifyDbUpdated();
   return post;
+}
+
+/**
+ * Creates identical posts targeted at multiple class sections.
+ * Used by the deliberate multi-section announcement / assignment broadcast flow.
+ */
+export function createMultiplePosts(inputs: Omit<ClassPost, "id" | "createdAt">[]): ClassPost[] {
+  const baseTs = Date.now();
+  const newPosts: ClassPost[] = inputs.map((input, idx) => {
+    const ts = baseTs + idx;
+    return {
+      ...input,
+      id: `post-${ts}-${Math.floor(Math.random() * 1000)}`,
+      createdAt: new Date(ts).toISOString(),
+    };
+  });
+  const existing = getPosts().filter((p) => !newPosts.some((np) => np.id === p.id));
+  const all = [...newPosts, ...existing].sort(comparePostsDesc);
+  localStorage.setItem(POSTS_KEY, JSON.stringify(all));
+
+  newPosts.forEach((post) => {
+    const docData = cleanForFirestore(post);
+    setDoc(doc(db, "class_posts", post.id), docData).catch((err) => {
+      console.error("Error writing multi-post to Firestore:", err);
+    });
+  });
+
+  notifyDbUpdated();
+  return newPosts;
 }
 
 export function deletePost(postId: string): void {
@@ -1482,11 +1678,27 @@ export function getSubmissionForStudent(postId: string, studentId: string): Assi
 export function submitAssignment(input: Omit<AssignmentSubmission, "id" | "submittedAt">): AssignmentSubmission {
   // Resubmitting replaces the previous submission rather than duplicating it.
   const existing = getSubmissionForStudent(input.postId, input.studentId);
+  if (existing && existing.status === "Graded") {
+    throw new Error("Cannot modify assignment: This submission has already been graded by your instructor.");
+  }
+
+  // Due date & late submission detection
+  const post = getPosts().find((p) => p.id === input.postId);
+  const now = new Date();
+  let isLate = false;
+  if (post?.dueDate) {
+    const todayStr = formatDate(now);
+    if (todayStr > post.dueDate) {
+      isLate = true;
+    }
+  }
+
   const submission: AssignmentSubmission = {
     ...input,
     id: existing?.id || `sub-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    submittedAt: new Date().toISOString(),
-    status: existing?.status || "Submitted",
+    submittedAt: now.toISOString(),
+    status: isLate ? "Late" : (existing?.status || "Submitted"),
+    isLate,
   };
   const submissions = getSubmissions();
   const index = submissions.findIndex((s) => s.id === submission.id);
@@ -1503,13 +1715,20 @@ export function submitAssignment(input: Omit<AssignmentSubmission, "id" | "submi
   return submission;
 }
 
-export function gradeSubmission(submissionId: string, score: number | string, feedback?: string): AssignmentSubmission | undefined {
+export function gradeSubmission(submissionId: string, rawScore: number | string, feedback?: string): AssignmentSubmission | undefined {
   const submissions = getSubmissions();
   const index = submissions.findIndex((s) => s.id === submissionId);
   if (index === -1) return undefined;
+
+  // Sanitize score if entered with a slash like "95 / 100"
+  let cleanScore = String(rawScore).trim();
+  if (cleanScore.includes("/")) {
+    cleanScore = cleanScore.split("/")[0].trim();
+  }
+
   const updated: AssignmentSubmission = {
     ...submissions[index],
-    score,
+    score: cleanScore,
     feedback: feedback || "",
     status: "Graded",
   };

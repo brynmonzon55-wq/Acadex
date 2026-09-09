@@ -15,6 +15,7 @@ export default defineConfig(() => {
     server: {
       host: '0.0.0.0',
       port: 3000,
+      allowedHosts: true as const,
       // Allows HMR/file-watching to be disabled via an env var if ever
       // needed (e.g. in a sandboxed or resource-constrained dev environment).
       hmr: process.env.DISABLE_HMR !== 'true',

@@ -43,7 +43,14 @@ import {
   School,
   Copy,
   Download,
-  Video
+  Video,
+  Ban,
+  ShieldOff,
+  Layers,
+  Check,
+  ChevronRight,
+  AlertTriangle,
+  Info
 } from "lucide-react";
 import { generateGoogleMeetLink } from "../lib/googleMeet";
 import {
@@ -83,7 +90,10 @@ import {
   getAnnouncements,
   getAssignments,
   createPost,
+  createMultiplePosts,
   deletePost,
+  comparePostsDesc,
+  getPostTime,
   getCommentsForPost,
   addComment,
   getSubmissionsForPost,
@@ -97,6 +107,9 @@ import {
   createClass,
   addStudentToClass,
   removeStudentFromClass,
+  blockStudentFromClass,
+  unblockStudentFromClass,
+  getBlockedStudentsForClass,
   getUnreadDirectMessagesCount,
 } from "../lib/db";
 
@@ -186,6 +199,7 @@ export default function TeacherDashboard({
   const [editStudentEmail, setEditStudentEmail] = useState("");
 
   const [studentToRemove, setStudentToRemove] = useState<{ id: string; name: string } | null>(null);
+  const [studentToBlock, setStudentToBlock] = useState<{ id: string; name: string } | null>(null);
 
   // Announcements Form State
   const [announcements, setAnnouncements] = useState<ClassPost[]>([]);
@@ -198,6 +212,13 @@ export default function TeacherDashboard({
   const [showCreateAnnModal, setShowCreateAnnModal] = useState(false);
   const [annGeneratingMeet, setAnnGeneratingMeet] = useState(false);
   const [annMeetError, setAnnMeetError] = useState("");
+
+  // Multi-section announcement broadcast safety state
+  const [showBroadcastAnnModal, setShowBroadcastAnnModal] = useState(false);
+  const [broadcastAnnStep, setBroadcastAnnStep] = useState<"select" | "confirm">("select");
+  const [broadcastAnnSelectedIds, setBroadcastAnnSelectedIds] = useState<string[]>([]);
+  const [broadcastAnnPosting, setBroadcastAnnPosting] = useState(false);
+  const [broadcastAnnSuccess, setBroadcastAnnSuccess] = useState<string | null>(null);
 
   // Assignments & Grading State
   const [assignments, setAssignments] = useState<ClassPost[]>([]);
@@ -267,6 +288,10 @@ export default function TeacherDashboard({
     ? []
     : students.filter((s) => selectedClass.studentIds.includes(s.id));
 
+  const blockedStudents = !selectedClass
+    ? []
+    : getBlockedStudentsForClass(selectedClass.id);
+
   const filteredAttendanceRecords = !selectedClass
     ? []
     : attendanceRecords.filter((r) =>
@@ -275,27 +300,23 @@ export default function TeacherDashboard({
 
   const filteredAnnouncements = !selectedClass
     ? []
-    : announcements.filter((a) => {
-        if (a.authorId.toLowerCase() !== dbUser.id.toLowerCase()) return false;
-        if (!a.classId || a.classId === "all") return true;
-        if (a.classId === selectedClass.id) return true;
-        if (selectedClass.subject && a.subject) {
-          return a.subject.toLowerCase() === selectedClass.subject.toLowerCase();
-        }
-        return false;
-      });
+    : announcements
+        .filter((a) => {
+          if (a.authorId.toLowerCase() !== dbUser.id.toLowerCase()) return false;
+          if (!a.classId || a.classId === "all") return true;
+          return a.classId === selectedClass.id;
+        })
+        .sort(comparePostsDesc);
 
   const filteredAssignments = !selectedClass
     ? []
-    : assignments.filter((a) => {
-        if (a.authorId.toLowerCase() !== dbUser.id.toLowerCase()) return false;
-        if (!a.classId || a.classId === "all") return true;
-        if (a.classId === selectedClass.id) return true;
-        if (selectedClass.subject && a.subject) {
-          return a.subject.toLowerCase() === selectedClass.subject.toLowerCase();
-        }
-        return false;
-      });
+    : assignments
+        .filter((a) => {
+          if (a.authorId.toLowerCase() !== dbUser.id.toLowerCase()) return false;
+          if (!a.classId || a.classId === "all") return true;
+          return a.classId === selectedClass.id;
+        })
+        .sort(comparePostsDesc);
 
   const handleCreateSection = () => {
     if (!newSectionName.trim()) {
@@ -484,6 +505,77 @@ export default function TeacherDashboard({
     loadDatabase();
   };
 
+  // Block Student from class section (removes student AND bars from rejoining)
+  const handleConfirmBlockStudent = () => {
+    if (!studentToBlock || !selectedClass) return;
+    blockStudentFromClass(selectedClass.id, studentToBlock.id);
+    setStudentToBlock(null);
+    loadDatabase();
+  };
+
+  // Unblock student from class section
+  const handleUnblockStudent = (studentId: string) => {
+    if (!selectedClass) return;
+    unblockStudentFromClass(selectedClass.id, studentId);
+    loadDatabase();
+  };
+
+  // Multi-section announcement broadcast handlers
+  const handleOpenBroadcastAnn = () => {
+    // Safety constraint: ALL UNCHECKED by default, no pre-selection
+    setBroadcastAnnSelectedIds([]);
+    setBroadcastAnnStep("select");
+    setShowBroadcastAnnModal(true);
+  };
+
+  const handleToggleBroadcastAnnSection = (classId: string) => {
+    setBroadcastAnnSelectedIds((prev) =>
+      prev.includes(classId) ? prev.filter((id) => id !== classId) : [...prev, classId]
+    );
+  };
+
+  const handleSelectAllBroadcastAnn = () => {
+    setBroadcastAnnSelectedIds(teacherClasses.map((c) => c.id));
+  };
+
+  const handleClearAllBroadcastAnn = () => {
+    setBroadcastAnnSelectedIds([]);
+  };
+
+  const handleConfirmBroadcastAnn = () => {
+    if (broadcastAnnPosting || broadcastAnnSelectedIds.length === 0 || !annContent.trim()) return;
+    setBroadcastAnnPosting(true);
+
+    const postsToCreate = broadcastAnnSelectedIds.map((targetClassId) => {
+      const targetClass = teacherClasses.find((c) => c.id === targetClassId);
+      return {
+        type: "announcement" as const,
+        authorId: user.id,
+        authorName: dbUser.name,
+        title: annTitle.trim() || "Announcement",
+        subject: annSubject.trim() || targetClass?.subject || "General",
+        content: annContent.trim(),
+        classId: targetClassId,
+        attachmentName: annAttachmentName || undefined,
+        attachmentDataUrl: annAttachmentDataUrl || undefined,
+      };
+    });
+
+    createMultiplePosts(postsToCreate);
+
+    setBroadcastAnnPosting(false);
+    setShowBroadcastAnnModal(false);
+    setBroadcastAnnSuccess(`Broadcast posted to ${broadcastAnnSelectedIds.length} class sections.`);
+    setTimeout(() => setBroadcastAnnSuccess(null), 4000);
+
+    setAnnTitle("");
+    setAnnSubject("");
+    setAnnContent("");
+    setAnnAttachmentName("");
+    setAnnAttachmentDataUrl("");
+    loadDatabase();
+  };
+
   // Log attendance for a student on selected date
   const handleSetStudentAttendance = (student: User, status: AttendanceStatus) => {
     const existing = attendanceRecords.find(
@@ -631,7 +723,12 @@ export default function TeacherDashboard({
     e.preventDefault();
     if (!gradingSubmission) return;
 
-    gradeSubmission(gradingSubmission.id, gradeInputScore, gradeInputFeedback);
+    let cleanScore = String(gradeInputScore).trim();
+    if (cleanScore.includes("/")) {
+      cleanScore = cleanScore.split("/")[0].trim();
+    }
+
+    gradeSubmission(gradingSubmission.id, cleanScore, gradeInputFeedback);
     setGradingSubmission(null);
     if (selectedAssignmentForGrading) {
       setAssignmentSubmissions(getSubmissionsForPost(selectedAssignmentForGrading.id));
@@ -836,13 +933,28 @@ export default function TeacherDashboard({
             )}
 
             {dbUser.isApproved && (
-              <button
-                onClick={() => setShowCreateSectionModal(true)}
-                className="px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm cursor-pointer shrink-0 transition-all"
-              >
-                <Plus className="h-4 w-4" />
-                <span>{teacherClasses.length === 0 ? "Create Your First Section" : "New Section"}</span>
-              </button>
+              <>
+                {teacherClasses.length > 0 && (
+                  <button
+                    onClick={() => {
+                      setActiveTab("announcements");
+                      handleOpenBroadcastAnn();
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-violet-950/80 border border-violet-500/40 hover:bg-violet-900/80 text-violet-300 hover:text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm cursor-pointer shrink-0 transition-all"
+                    title="Broadcast an announcement to all or multiple class sections at once"
+                  >
+                    <Layers className="h-4 w-4 text-violet-400" />
+                    <span>Broadcast to All Sections</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowCreateSectionModal(true)}
+                  className="px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm cursor-pointer shrink-0 transition-all"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>{teacherClasses.length === 0 ? "Create Your First Section" : "New Section"}</span>
+                </button>
+              </>
             )}
           </div>
         </motion.div>
@@ -1015,10 +1127,54 @@ export default function TeacherDashboard({
                           >
                             <UserMinus className="h-3.5 w-3.5" />
                           </button>
+                          {selectedClass && (
+                            <button
+                              onClick={() => setStudentToBlock({ id: st.id, name: st.name })}
+                              className="p-1.5 text-rose-300 hover:text-rose-200 bg-rose-500/20 rounded-lg border border-rose-500/30 cursor-pointer transition-colors"
+                              title={`Block ${st.name} from ${selectedClass.name} (barred from rejoining)`}
+                            >
+                              <Ban className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </div>
                       </motion.div>
                     );
                   })}
+                </div>
+              )}
+
+              {/* Blocked Students Section */}
+              {selectedClass && blockedStudents.length > 0 && (
+                <div className="mt-8 pt-6 border-t border-rose-500/20 space-y-3">
+                  <div className="flex items-center gap-2 text-rose-400">
+                    <ShieldAlert className="h-5 w-5 shrink-0" />
+                    <h3 className="font-extrabold text-sm text-white">
+                      Blocked Students ({blockedStudents.length})
+                    </h3>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    These students have been removed and barred from rejoining <strong className="text-white">{selectedClass.name}</strong> with the join code. Unblock them to allow them to re-enter.
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {blockedStudents.map((st) => (
+                      <div
+                        key={st.id}
+                        className="p-3.5 rounded-2xl bg-rose-950/20 border border-rose-500/30 flex items-center justify-between gap-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-white truncate">{st.name}</p>
+                          <p className="text-[11px] text-slate-400 font-mono">ID: {st.id}</p>
+                        </div>
+                        <button
+                          onClick={() => handleUnblockStudent(st.id)}
+                          className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-rose-300 hover:text-white border border-rose-500/30 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+                        >
+                          <ShieldOff className="h-3.5 w-3.5" />
+                          <span>Unblock</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -1351,31 +1507,54 @@ export default function TeacherDashboard({
             animate={{ opacity: 1, y: 0 }}
             className="space-y-6"
           >
-            <div className="flex justify-between items-center">
+            <div className="flex justify-between items-center flex-wrap gap-2">
               <h2 className="text-lg font-black text-ink flex items-center gap-2">
                 <Megaphone className="h-5 w-5 text-violet-500" />
                 Course Announcements
               </h2>
-              {dbUser.isApproved && selectedClass ? (
-                <button
-                  onClick={() => {
-                    setAnnClassId(selectedClassId);
-                    if (selectedClass?.subject) setAnnSubject(selectedClass.subject);
-                    setShowCreateAnnModal(true);
-                  }}
-                  className="px-4 py-2 text-xs font-extrabold text-white bg-violet-500 hover:bg-violet-600 rounded-xl cursor-pointer shadow-md shadow-violet-500/20 flex items-center gap-2"
-                >
-                  <Plus className="h-4 w-4" /> Post Announcement
-                </button>
-              ) : (
-                <span
-                  className="px-4 py-2 text-xs font-bold text-ink-soft/60 bg-ink-soft/10 rounded-xl flex items-center gap-2"
-                  title={!dbUser.isApproved ? "Your account needs to be verified before you can post." : "Create a class section first."}
-                >
-                  <Plus className="h-4 w-4" /> Post Announcement
-                </span>
-              )}
+              <div className="flex items-center gap-2">
+                {dbUser.isApproved && teacherClasses.length > 0 && (
+                  <button
+                    onClick={() => {
+                      if (selectedClassId) setAnnClassId(selectedClassId);
+                      if (selectedClass?.subject) setAnnSubject(selectedClass.subject);
+                      handleOpenBroadcastAnn();
+                    }}
+                    className="px-3.5 py-2 text-xs font-bold text-violet-300 bg-violet-950/80 border border-violet-500/40 hover:bg-violet-900/80 rounded-xl cursor-pointer flex items-center gap-1.5 transition-all shadow-sm"
+                    title="Broadcast announcement to multiple or all sections with safety confirmation"
+                  >
+                    <Layers className="h-4 w-4 text-violet-400" />
+                    <span>Broadcast to All Sections...</span>
+                  </button>
+                )}
+                {dbUser.isApproved && selectedClass ? (
+                  <button
+                    onClick={() => {
+                      setAnnClassId(selectedClassId);
+                      if (selectedClass?.subject) setAnnSubject(selectedClass.subject);
+                      setShowCreateAnnModal(true);
+                    }}
+                    className="px-4 py-2 text-xs font-extrabold text-white bg-violet-500 hover:bg-violet-600 rounded-xl cursor-pointer shadow-md shadow-violet-500/20 flex items-center gap-2"
+                  >
+                    <Plus className="h-4 w-4" /> Post Announcement
+                  </button>
+                ) : (
+                  <span
+                    className="px-4 py-2 text-xs font-bold text-ink-soft/60 bg-ink-soft/10 rounded-xl flex items-center gap-2"
+                    title={!dbUser.isApproved ? "Your account needs to be verified before you can post." : "Create a class section first."}
+                  >
+                    <Plus className="h-4 w-4" /> Post Announcement
+                  </span>
+                )}
+              </div>
             </div>
+
+            {broadcastAnnSuccess && (
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-bold rounded-xl flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                <span>{broadcastAnnSuccess}</span>
+              </div>
+            )}
 
             {filteredAnnouncements.length === 0 ? (
               <div className="bg-cream border border-ink-soft/10 rounded-3xl p-12 text-center text-ink-soft/60 space-y-2">
@@ -1731,9 +1910,24 @@ export default function TeacherDashboard({
 
                 <form onSubmit={handleCreateAnnouncement} className="space-y-3">
                   <div>
-                    <label className="block text-[10px] font-bold text-ink-soft dark:text-slate-300 mb-1">
-                      Target Class Section
-                    </label>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="block text-[10px] font-bold text-ink-soft dark:text-slate-300">
+                        Target Class Section
+                      </label>
+                      {teacherClasses.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowCreateAnnModal(false);
+                            handleOpenBroadcastAnn();
+                          }}
+                          className="text-[10px] font-bold text-violet-400 hover:text-violet-300 flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          <Layers className="h-3 w-3" />
+                          <span>Broadcast to multiple sections</span>
+                        </button>
+                      )}
+                    </div>
                     <select
                       value={annClassId}
                       onChange={(e) => {
@@ -2137,13 +2331,13 @@ export default function TeacherDashboard({
                 <form onSubmit={handleSaveGrade} className="space-y-3">
                   <div>
                     <label className="text-xs font-bold text-ink-soft block mb-1">
-                      Score / Grade (e.g. 95 or A):
+                      Score (out of {selectedAssignmentForGrading?.maxPoints || 100}):
                     </label>
                     <input
                       type="text"
                       value={gradeInputScore}
                       onChange={(e) => setGradeInputScore(e.target.value)}
-                      placeholder="e.g. 95 / 100"
+                      placeholder="e.g. 95"
                       required
                       className="w-full p-2.5 text-xs bg-slate-900 border border-ink-soft/20 rounded-xl text-ink font-mono font-bold focus:outline-none focus:border-violet-400"
                     />
@@ -2833,6 +3027,296 @@ export default function TeacherDashboard({
                     <span>Remove from Class</span>
                   </button>
                 </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* BLOCK STUDENT FROM CLASS MODAL */}
+        <AnimatePresence>
+          {studentToBlock && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4"
+            >
+              <div className="bg-slate-900 border border-rose-500/40 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl text-white">
+                <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2 text-rose-400">
+                    <Ban className="h-5 w-5" />
+                    <h3 className="font-extrabold text-base">Block Student from Section</h3>
+                  </div>
+                  <button onClick={() => setStudentToBlock(null)} className="cursor-pointer">
+                    <X className="h-5 w-5 text-slate-400 hover:text-white" />
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  <p className="text-xs text-slate-200 leading-relaxed">
+                    Are you sure you want to block{" "}
+                    <strong className="text-white">{studentToBlock.name}</strong> ({studentToBlock.id}) from{" "}
+                    <strong className="text-rose-300">{selectedClass?.name || "this class"}</strong>?
+                  </p>
+                  <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-500/30 text-rose-200 text-xs space-y-1">
+                    <p className="font-bold flex items-center gap-1.5">
+                      <ShieldAlert className="h-4 w-4 text-rose-400 shrink-0" />
+                      Rejoining Barred
+                    </p>
+                    <p className="text-[11px] text-rose-300/90 leading-relaxed">
+                      This kicks the student from this section and adds them to this class&apos;s block list. Even if they have the join code ({selectedClass?.joinCode}), they will be barred from re-entering until you explicitly unblock them.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setStudentToBlock(null)}
+                    className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white bg-slate-800 rounded-xl border border-slate-700 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmBlockStudent}
+                    className="px-5 py-2 text-xs font-extrabold text-white bg-rose-600 hover:bg-rose-500 rounded-xl shadow-lg shadow-rose-600/30 cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Ban className="h-4 w-4" />
+                    <span>Confirm & Block Student</span>
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* MULTI-SECTION ANNOUNCEMENT BROADCAST MODAL (SAFETY-FIRST TWO-STEP FLOW) */}
+        <AnimatePresence>
+          {showBroadcastAnnModal && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4 overflow-y-auto"
+            >
+              <div className="bg-slate-900 border border-violet-500/40 rounded-3xl p-6 max-w-lg w-full space-y-4 shadow-2xl text-white my-8">
+                <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2 text-violet-400">
+                    <Layers className="h-5 w-5" />
+                    <h3 className="font-extrabold text-base text-white">Broadcast Announcement to Sections</h3>
+                  </div>
+                  <button
+                    onClick={() => setShowBroadcastAnnModal(false)}
+                    className="text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+
+                {/* Safety Step 1: Explicit Section Selection */}
+                {broadcastAnnStep === "select" && (
+                  <div className="space-y-4 text-xs">
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-300 block mb-1">
+                        Announcement Title
+                      </label>
+                      <input
+                        type="text"
+                        value={annTitle}
+                        onChange={(e) => setAnnTitle(e.target.value)}
+                        placeholder="Announcement Title..."
+                        className="w-full p-2.5 text-xs bg-slate-950 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:border-violet-400 focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-300 block mb-1">
+                        Subject Tag
+                      </label>
+                      <input
+                        type="text"
+                        value={annSubject}
+                        onChange={(e) => setAnnSubject(e.target.value)}
+                        placeholder="e.g. School-wide / Mathematics..."
+                        className="w-full p-2.5 text-xs bg-slate-950 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:border-violet-400 focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-300 block mb-1">
+                        Announcement Content <span className="text-rose-400">*</span>
+                      </label>
+                      <textarea
+                        value={annContent}
+                        onChange={(e) => setAnnContent(e.target.value)}
+                        placeholder="Write your announcement details here..."
+                        rows={4}
+                        className="w-full p-2.5 text-xs bg-slate-950 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:border-violet-400 focus:outline-none resize-none"
+                      />
+                    </div>
+
+                    {/* Section Selector: Crucial Safety Constraint: ALL UNCHECKED by default */}
+                    <div className="space-y-2 pt-2 border-t border-slate-800">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold text-slate-200">
+                          Select Target Sections ({broadcastAnnSelectedIds.length} of {teacherClasses.length} selected)
+                        </label>
+                        <div className="flex items-center gap-2 text-[11px]">
+                          <button
+                            type="button"
+                            onClick={handleSelectAllBroadcastAnn}
+                            className="text-violet-400 hover:text-violet-300 underline font-semibold cursor-pointer"
+                          >
+                            Select All
+                          </button>
+                          <span className="text-slate-600">&bull;</span>
+                          <button
+                            type="button"
+                            onClick={handleClearAllBroadcastAnn}
+                            className="text-slate-400 hover:text-white underline font-semibold cursor-pointer"
+                          >
+                            Clear All
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                        {teacherClasses.map((cls) => {
+                          const isChecked = broadcastAnnSelectedIds.includes(cls.id);
+                          return (
+                            <label
+                              key={cls.id}
+                              onClick={() => handleToggleBroadcastAnnSection(cls.id)}
+                              className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer select-none ${
+                                isChecked
+                                  ? "bg-violet-950/60 border-violet-500/50 text-white"
+                                  : "bg-slate-950/60 border-slate-800 text-slate-300 hover:border-slate-700"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div
+                                  className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                                    isChecked
+                                      ? "bg-violet-600 border-violet-500 text-white"
+                                      : "border-slate-600 bg-slate-900"
+                                  }`}
+                                >
+                                  {isChecked && <Check className="h-3 w-3" />}
+                                </div>
+                                <div className="truncate">
+                                  <p className="font-bold text-xs truncate">{cls.name}</p>
+                                  <p className="text-[10px] text-slate-400">
+                                    {cls.subject || "General"} &bull; {cls.studentIds.length} students &bull; Code: {cls.joinCode}
+                                  </p>
+                                </div>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+
+                      <div className="flex items-center gap-2 text-[11px] text-slate-400 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
+                        <Info className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+                        <span>Select one or more sections. You will review the target list before publishing.</span>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setShowBroadcastAnnModal(false)}
+                        className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white bg-slate-800 rounded-xl border border-slate-700 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={broadcastAnnSelectedIds.length === 0 || !annContent.trim()}
+                        onClick={() => setBroadcastAnnStep("confirm")}
+                        className="px-5 py-2 text-xs font-extrabold text-white bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl shadow-lg shadow-violet-600/30 cursor-pointer flex items-center gap-1.5"
+                      >
+                        <span>Next: Review & Confirm</span>
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Safety Step 2: Confirmation Summary Step */}
+                {broadcastAnnStep === "confirm" && (
+                  <div className="space-y-4 text-xs">
+                    <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-violet-400 font-extrabold text-sm">
+                          <Layers className="h-4 w-4 shrink-0" />
+                          <span>Confirm Target Sections</span>
+                        </div>
+                        <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-violet-500/15 text-violet-300 border border-violet-500/30">
+                          {broadcastAnnSelectedIds.length} {broadcastAnnSelectedIds.length === 1 ? "section" : "sections"}
+                        </span>
+                      </div>
+                      <p className="text-slate-300 text-xs">
+                        Your announcement will be broadcasted to these class feeds:
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
+                        {broadcastAnnSelectedIds.map((id) => {
+                          const cls = teacherClasses.find((c) => c.id === id);
+                          return (
+                            <div key={id} className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80 flex items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="font-bold text-white text-xs truncate">{cls?.name || id}</p>
+                                <p className="text-[10px] text-slate-400 truncate">
+                                  {cls?.subject || "General"} &bull; {cls?.studentIds.length || 0} students
+                                </p>
+                              </div>
+                              <Check className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5">
+                      <p className="text-[10px] uppercase font-bold text-violet-400 tracking-wider">Announcement Preview</p>
+                      <p className="font-bold text-white text-xs">{annTitle.trim() || "Announcement"}</p>
+                      <p className="text-slate-300 line-clamp-3 text-xs leading-relaxed">{annContent}</p>
+                      {annAttachmentName && (
+                        <p className="text-[11px] text-cyan-300 font-semibold pt-1">
+                          📎 Attached: {annAttachmentName}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex justify-between items-center pt-3 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setBroadcastAnnStep("select")}
+                        className="px-4 py-2 text-xs font-bold text-slate-300 hover:text-white bg-slate-800 rounded-xl border border-slate-700 cursor-pointer"
+                      >
+                        Back to Edit
+                      </button>
+                      <button
+                        type="button"
+                        disabled={broadcastAnnPosting}
+                        onClick={handleConfirmBroadcastAnn}
+                        className="px-5 py-2 text-xs font-extrabold text-white bg-violet-600 hover:bg-violet-500 disabled:opacity-60 rounded-xl shadow-lg shadow-violet-600/30 cursor-pointer flex items-center gap-1.5"
+                      >
+                        {broadcastAnnPosting ? (
+                          <>
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                            <span>Broadcasting...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Send className="h-3.5 w-3.5" />
+                            <span>Confirm & Send to {broadcastAnnSelectedIds.length} Sections</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </motion.div>
           )}

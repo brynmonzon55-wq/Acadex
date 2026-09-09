@@ -88,3 +88,15 @@ firebase deploy --only firestore:rules
 ```
 
 (or paste the contents of `firestore.rules` into Firebase Console → Firestore Database → Rules). Until you do, the database is still running under whatever rules were deployed last.
+
+### Optional: real Google Meet links
+
+Everything above (login, classes, attendance, messaging, grading) runs on Firebase and works with zero extra setup once the repo is pushed. The **only** feature that needs additional configuration is the "Generate Google Meet link" button, which uses the Google Calendar API on behalf of the signed-in teacher.
+
+To enable it in production:
+
+1. In Google Cloud Console (same project as your Firebase project), enable the **Google Calendar API** and create an **OAuth 2.0 Client ID** (type: Web application). Add your GitHub Pages URL under "Authorized JavaScript origins".
+2. Add that client ID as a GitHub repo secret named `VITE_GOOGLE_OAUTH_CLIENT_ID` (Settings → Secrets and variables → Actions). The deploy workflow already passes it into the build.
+3. For local dev, put the same value in a `.env` file as `VITE_GOOGLE_OAUTH_CLIENT_ID=...`.
+
+If this isn't configured, that one button shows a clear "not configured yet" message instead of failing silently — nothing else in the app is affected.

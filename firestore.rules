@@ -82,13 +82,19 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------------------
-    // attendance_records - only teachers take attendance in this app, so
-    // only an approved teacher may write one. Everyone signed in can read
-    // (needed for a student's own history + class stats).
+    // attendance_records - teachers take attendance in this app, and
+    // students may also record their own daily check-in (Present/Late/Absent).
+    // Everyone signed in can read records for stats and rosters.
     // ---------------------------------------------------------------------
     match /attendance_records/{recordId} {
       allow read: if signedIn();
       allow create, update, delete: if isApprovedTeacher();
+      // Student self-attendance logging for today
+      allow create: if signedIn()
+        && request.resource.data.studentId == myProfile().id;
+      allow update: if signedIn()
+        && resource.data.studentId == myProfile().id
+        && request.resource.data.studentId == myProfile().id;
     }
 
     // ---------------------------------------------------------------------
@@ -106,22 +112,25 @@ service cloud.firestore {
 
     // ---------------------------------------------------------------------
     // classes - only the owning teacher may manage their own class section.
-    // Students may only ever add themselves to a roster (joining by code);
-    // they can't touch anything else about a class.
+    // Students may only ever add or remove themselves from a roster
+    // (joining by code or dropping the class).
     // ---------------------------------------------------------------------
     match /classes/{classId} {
       allow read: if signedIn();
       allow create: if isApprovedTeacher() && request.resource.data.teacherId == myProfile().id;
       allow update, delete: if isApprovedTeacher() && resource.data.teacherId == myProfile().id;
       allow update: if signedIn()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['studentIds']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['studentIds'])
+        && (
+          request.resource.data.studentIds.hasAll(resource.data.studentIds)
+          || resource.data.studentIds.hasAll(request.resource.data.studentIds)
+        );
     }
 
     // ---------------------------------------------------------------------
     // class_posts (announcements + assignments) - only an approved teacher
     // may post to a class stream, and only the original author may edit or
-    // delete their own post (one teacher can no longer delete another
-    // teacher's announcement).
+    // delete their own post.
     // ---------------------------------------------------------------------
     match /class_posts/{postId} {
       allow read: if signedIn();
@@ -130,35 +139,48 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------------------
-    // post_comments - students and teachers can both comment; you may only
-    // ever post, edit, or delete as yourself.
+    // post_comments - students and teachers can both comment. Public
+    // comments are visible to class members; private comments are strictly
+    // restricted to the author, the target student, or an approved teacher.
+    // Teachers may delete any comment (moderation).
     // ---------------------------------------------------------------------
     match /post_comments/{commentId} {
-      allow read: if signedIn();
+      allow read: if signedIn() && (
+        !('commentType' in resource.data) ||
+        resource.data.commentType != 'private' ||
+        isApprovedTeacher() ||
+        resource.data.authorId == myProfile().id ||
+        ('targetStudentId' in resource.data && resource.data.targetStudentId == myProfile().id)
+      );
       allow create: if signedIn() && request.resource.data.authorId == myProfile().id;
-      allow update, delete: if signedIn() && resource.data.authorId == myProfile().id;
+      allow update: if signedIn() && resource.data.authorId == myProfile().id;
+      allow delete: if (signedIn() && resource.data.authorId == myProfile().id) || isApprovedTeacher();
     }
 
     // ---------------------------------------------------------------------
-    // assignment_submissions - a student may only create/edit/delete their
-    // OWN submission. Grading (score/feedback/status) is teacher-only and
-    // can't touch the submission's actual content.
+    // assignment_submissions - students may ONLY view, create, or update
+    // their OWN submissions (FERPA protection: classmates cannot read
+    // each other's submissions or grades). Once an assignment is graded,
+    // students cannot overwrite their work. Teachers can grade and leave feedback.
     // ---------------------------------------------------------------------
     match /assignment_submissions/{submissionId} {
-      allow read: if signedIn();
+      allow read: if isApprovedTeacher()
+        || (signedIn() && resource.data.studentId == myProfile().id);
       allow create: if signedIn() && request.resource.data.studentId == myProfile().id;
       allow update: if signedIn() && resource.data.studentId == myProfile().id
-        && request.resource.data.studentId == myProfile().id;
+        && request.resource.data.studentId == myProfile().id
+        && (!('status' in resource.data) || resource.data.status != 'Graded');
       allow update: if isApprovedTeacher()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['score', 'feedback', 'status']);
-      allow delete: if signedIn() && resource.data.studentId == myProfile().id;
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['score', 'feedback', 'status', 'isLate']);
+      allow delete: if (signedIn() && resource.data.studentId == myProfile().id && (!('status' in resource.data) || resource.data.status != 'Graded'))
+        || isApprovedTeacher();
     }
 
     // ---------------------------------------------------------------------
     // direct_messages - a private conversation between exactly two people.
     // Only the two participants can ever read it; only the sender can
     // create it; the only edit allowed afterwards is the recipient
-    // flipping "read".
+    // flipping "read". Participants can delete messages.
     // ---------------------------------------------------------------------
     match /direct_messages/{messageId} {
       allow read: if signedIn()
@@ -166,7 +188,8 @@ service cloud.firestore {
       allow create: if signedIn() && request.resource.data.senderId == myProfile().id;
       allow update: if signedIn() && resource.data.recipientId == myProfile().id
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
-      allow delete: if false;
+      allow delete: if signedIn()
+        && (resource.data.senderId == myProfile().id || resource.data.recipientId == myProfile().id);
     }
 
     // Deny everything else by default (replaces the old open catch-all).

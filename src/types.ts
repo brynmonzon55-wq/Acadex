@@ -74,6 +74,7 @@ export interface ClassRoom {
   joinCode: string; // short code students can enter to join
   createdAt: string;
   studentIds: string[]; // User.id of enrolled students
+  blockedStudentIds?: string[]; // User.id of blocked students barred from rejoining this section
 }
 
 export type ClassPostType = "announcement" | "assignment";
@@ -118,7 +119,8 @@ export interface AssignmentSubmission {
   attachmentDataUrl?: string;
   score?: number | string; // e.g. 95 or "A"
   feedback?: string; // Teacher feedback note
-  status?: "Submitted" | "Graded";
+  status?: "Submitted" | "Graded" | "Late";
+  isLate?: boolean;
 }
 
 // ---------------------------------------------------------------------------

@@ -4,17 +4,18 @@ import {
   Paperclip, Calendar, Trash2, Send, X, FileText, Megaphone, UserPlus, UserMinus,
   Activity, ClipboardCheck, Copy, School, BookOpen, Clock, Search,
   AlertTriangle, ShieldAlert, CheckCircle2, ChevronRight, UserCheck,
-  Lock, Globe, MessageCircle
+  Lock, Globe, MessageCircle, Ban, ShieldOff, Layers, Info, LogOut
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { User, ClassRoom, ClassPost, PostComment, AssignmentSubmission, AttendanceRecord, AttendanceStatus } from "../types";
 import {
   getClassesForTeacher, getClassesForStudent, getClassById, createClass,
-  addStudentToClass, removeStudentFromClass, joinClassByCode,
-  deleteClass, getPostsForClass, createPost, deletePost, getCommentsForPost,
+  addStudentToClass, removeStudentFromClass, blockStudentFromClass, unblockStudentFromClass, getBlockedStudentsForClass, joinClassByCode,
+  deleteClass, leaveClass, getPostsForClass, createPost, createMultiplePosts, deletePost, getCommentsForPost,
   getClassCommentsForPost, getPrivateCommentsForPost,
   addComment, getSubmissionsForPost, getSubmissionForStudent, submitAssignment,
   getClassmatesWithStats, getUsers, getAttendanceRecords, saveAttendanceRecord, attendanceMatchesClass, formatDate,
+  getPostTime, comparePostsDesc,
 } from "../lib/db";
 import { openDirectMessage } from "./ClassMessenger";
 import { processFileUpload } from "../lib/fileUtils";
@@ -181,8 +182,12 @@ function ClassList({
       setJoinCodeInput("");
       setShowJoinModal(false);
       setError("");
-    } catch {
-      setError("Invalid or expired class join code. Check with your teacher.");
+    } catch (err: any) {
+      if (err?.message === "blocked") {
+        setError("You have been blocked from joining this section by the instructor. You cannot join with this code.");
+      } else {
+        setError("Invalid or expired class join code. Check with your teacher.");
+      }
     }
   };
 
@@ -508,6 +513,12 @@ function ClassDetail({
     onDeleted();
   };
 
+  const handleLeaveClass = () => {
+    if (!confirm(`Are you sure you want to leave section "${cls.name}"? You can rejoin later using the join code if permitted.`)) return;
+    leaveClass(cls.id, currentUser.id);
+    onBack();
+  };
+
   return (
     <div className="space-y-6">
       {/* Back Button */}
@@ -543,7 +554,7 @@ function ClassDetail({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {isTeacher && (
+            {isTeacher ? (
               <>
                 <button
                   onClick={() => setTab("attendance")}
@@ -559,6 +570,14 @@ function ClassDetail({
                   <Trash2 className="h-4 w-4" />
                 </button>
               </>
+            ) : (
+              <button
+                onClick={handleLeaveClass}
+                className="px-3.5 py-2 rounded-xl bg-slate-950/80 hover:bg-rose-950/70 text-slate-400 hover:text-rose-400 border border-slate-800 text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
+                title="Leave this class"
+              >
+                <LogOut className="h-3.5 w-3.5" /> Leave Class
+              </button>
             )}
           </div>
         </div>
@@ -828,16 +847,32 @@ function buildAttendanceEntries(cls: ClassRoom): LogEntry[] {
   records.forEach((r) => {
     byDate.set(r.date, [...(byDate.get(r.date) || []), r]);
   });
-  return Array.from(byDate.entries()).map(([date, recs]) => ({
-    kind: "attendance" as const,
-    ts: new Date(`${date}T12:00:00`).getTime(),
-    date,
-    present: recs.filter((r) => r.status === "Present").length,
-    late: recs.filter((r) => r.status === "Late").length,
-    absent: recs.filter((r) => r.status === "Absent").length,
-    total: recs.length,
-    records: recs,
-  }));
+  return Array.from(byDate.entries()).map(([date, recs]) => {
+    // Derive timestamp from actual record times if available,
+    // otherwise default to the beginning of the day (00:00:00) so attendance
+    // never outranks fresh announcements and assignments posted during the day!
+    let recordTs = 0;
+    for (const r of recs) {
+      if (r.time && r.time !== "00:00:00") {
+        const parsed = new Date(`${date} ${r.time}`).getTime();
+        if (!isNaN(parsed) && parsed > recordTs) {
+          recordTs = parsed;
+        }
+      }
+    }
+    const ts = recordTs > 0 ? recordTs : new Date(`${date}T00:00:00`).getTime();
+
+    return {
+      kind: "attendance" as const,
+      ts,
+      date,
+      present: recs.filter((r) => r.status === "Present").length,
+      late: recs.filter((r) => r.status === "Late").length,
+      absent: recs.filter((r) => r.status === "Absent").length,
+      total: recs.length,
+      records: recs,
+    };
+  });
 }
 
 function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
@@ -852,6 +887,15 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
   const [attachment, setAttachment] = useState<{ name: string; dataUrl: string } | null>(null);
   const [fileError, setFileError] = useState("");
   const [posting, setPosting] = useState(false);
+
+  // Multi-section broadcast safety flow state
+  const [showBroadcastModal, setShowBroadcastModal] = useState(false);
+  const [broadcastStep, setBroadcastStep] = useState<"select" | "confirm">("select");
+  const [broadcastSelectedIds, setBroadcastSelectedIds] = useState<string[]>([]);
+  const [broadcastPosting, setBroadcastPosting] = useState(false);
+  const [broadcastSuccessMsg, setBroadcastSuccessMsg] = useState("");
+
+  const teacherClasses = useMemo(() => (isTeacher ? getClassesForTeacher(currentUser.id) : []), [isTeacher, currentUser.id]);
 
   useEffect(() => {
     const refresh = () => {
@@ -892,7 +936,7 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
       type: postType,
       authorId: currentUser.id,
       authorName: currentUser.name,
-      title: postType === "assignment" ? title.trim() : undefined,
+      title: postType === "assignment" ? title.trim() : (title.trim() || undefined),
       content: content.trim(),
       dueDate: postType === "assignment" && dueDate ? dueDate : undefined,
       attachmentName: attachment?.name,
@@ -903,13 +947,80 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
     setPosting(false);
   };
 
+  // Open deliberate broadcast flow: all sections unchecked by default!
+  const handleOpenBroadcast = () => {
+    if (!content.trim() && !title.trim()) {
+      setFileError("Please fill in your announcement or assignment details first before broadcasting.");
+      return;
+    }
+    setFileError("");
+    // Crucial safety constraint: ALL UNCHECKED by default, no pre-selection
+    setBroadcastSelectedIds([]);
+    setBroadcastStep("select");
+    setShowBroadcastModal(true);
+  };
+
+  const handleToggleSection = (sectionId: string) => {
+    setBroadcastSelectedIds((prev) =>
+      prev.includes(sectionId) ? prev.filter((id) => id !== sectionId) : [...prev, sectionId]
+    );
+  };
+
+  const handleSelectAllSections = () => {
+    setBroadcastSelectedIds(teacherClasses.map((c) => c.id));
+  };
+
+  const handleClearAllSections = () => {
+    setBroadcastSelectedIds([]);
+  };
+
+  const handleConfirmBroadcast = () => {
+    if (broadcastPosting || broadcastSelectedIds.length === 0) return;
+    setBroadcastPosting(true);
+
+    const inputs = broadcastSelectedIds.map((targetClassId) => {
+      const targetCls = teacherClasses.find((c) => c.id === targetClassId);
+      return {
+        classId: targetClassId,
+        type: postType,
+        authorId: currentUser.id,
+        authorName: currentUser.name,
+        title: postType === "assignment" ? title.trim() : (title.trim() || "Announcement"),
+        subject: targetCls?.subject || "General",
+        content: content.trim(),
+        dueDate: postType === "assignment" && dueDate ? dueDate : undefined,
+        attachmentName: attachment?.name,
+        attachmentDataUrl: attachment?.dataUrl,
+      };
+    });
+
+    createMultiplePosts(inputs);
+    setPosts(getPostsForClass(cls.id));
+    setShowBroadcastModal(false);
+    resetComposer();
+    setBroadcastPosting(false);
+    setBroadcastSuccessMsg(`Successfully broadcast to ${broadcastSelectedIds.length} sections.`);
+    setTimeout(() => setBroadcastSuccessMsg(""), 4000);
+  };
+
   const entries: LogEntry[] = [
-    ...posts.map((post) => ({ kind: "post" as const, ts: new Date(post.createdAt).getTime(), post })),
+    ...posts.map((post) => ({ kind: "post" as const, ts: getPostTime(post), post })),
     ...attendanceEntries,
   ].sort((a, b) => b.ts - a.ts);
 
+  const selectedTargetClassNames = teacherClasses
+    .filter((c) => broadcastSelectedIds.includes(c.id))
+    .map((c) => c.name);
+
   return (
     <div className="space-y-4">
+      {broadcastSuccessMsg && (
+        <div className="p-3 bg-emerald-500/20 border border-emerald-500/40 rounded-2xl text-emerald-300 text-xs font-bold flex items-center gap-2">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span>{broadcastSuccessMsg}</span>
+        </div>
+      )}
+
       {isTeacher && !showComposer && (
         <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-4 flex gap-3">
           <button
@@ -930,21 +1041,24 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
       {isTeacher && showComposer && (
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 shadow-2xl">
           <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-            <h4 className="font-extrabold text-white text-sm flex items-center gap-2">
-              {postType === "assignment" ? <FileText className="h-4 w-4 text-fuchsia-400" /> : <Megaphone className="h-4 w-4 text-violet-400" />}
-              {postType === "assignment" ? "New Class Homework / Assignment" : "New Class Announcement"}
-            </h4>
-            <button onClick={resetComposer} className="text-slate-400 hover:text-white"><X className="h-4 w-4" /></button>
+            <div className="space-y-0.5">
+              <h4 className="font-extrabold text-white text-sm flex items-center gap-2">
+                {postType === "assignment" ? <FileText className="h-4 w-4 text-fuchsia-400" /> : <Megaphone className="h-4 w-4 text-violet-400" />}
+                {postType === "assignment" ? "New Class Homework / Assignment" : "New Class Announcement"}
+              </h4>
+              <p className="text-[11px] text-slate-400">
+                Default scope: <span className="text-violet-300 font-bold">{cls.name}</span>
+              </p>
+            </div>
+            <button onClick={resetComposer} className="text-slate-400 hover:text-white cursor-pointer"><X className="h-4 w-4" /></button>
           </div>
 
-          {postType === "assignment" && (
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Assignment Title (e.g., Chapter 4 Calculus Problem Set)"
-              className="w-full px-4 py-2.5 text-xs font-bold rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-violet-500"
-            />
-          )}
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder={postType === "assignment" ? "Assignment Title (e.g., Chapter 4 Calculus Problem Set)" : "Announcement Title (Optional)..."}
+            className="w-full px-4 py-2.5 text-xs font-bold rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-violet-500"
+          />
 
           <textarea
             value={content}
@@ -975,22 +1089,260 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
               </label>
 
               {attachment && (
-                <button onClick={() => setAttachment(null)} className="text-xs text-rose-400 font-bold">Remove</button>
+                <button onClick={() => setAttachment(null)} className="text-xs text-rose-400 font-bold cursor-pointer">Remove</button>
               )}
             </div>
 
-            <button
-              onClick={handlePost}
-              disabled={posting}
-              className="px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-extrabold text-xs shadow-md shadow-violet-500/25 cursor-pointer"
-            >
-              {posting ? "Posting..." : "Publish to Class"}
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              {isTeacher && teacherClasses.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleOpenBroadcast}
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-violet-300 font-extrabold text-xs border border-violet-500/30 flex items-center gap-1.5 cursor-pointer transition-all shadow-sm"
+                  title="Broadcast to multiple or all sections with deliberate confirmation"
+                >
+                  <Layers className="h-3.5 w-3.5 text-violet-400" />
+                  <span>Broadcast to All Sections...</span>
+                </button>
+              )}
+
+              <button
+                onClick={handlePost}
+                disabled={posting}
+                className="px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-extrabold text-xs shadow-md shadow-violet-500/25 cursor-pointer"
+              >
+                {posting ? "Posting..." : `Publish to ${cls.name}`}
+              </button>
+            </div>
           </div>
 
           {fileError && <p className="text-xs text-rose-400 font-bold">{fileError}</p>}
         </div>
       )}
+
+      {/* DELIBERATE TWO-STEP MULTI-SECTION BROADCAST MODAL */}
+      <AnimatePresence>
+        {showBroadcastModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4"
+          >
+            <div className="bg-slate-900 border border-violet-500/40 rounded-3xl p-6 max-w-lg w-full space-y-5 shadow-2xl text-white">
+              {/* Header */}
+              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-2">
+                  <Layers className="h-5 w-5 text-violet-400" />
+                  <div>
+                    <h3 className="font-extrabold text-base">
+                      {broadcastStep === "select" ? "Post to Multiple Sections" : "Confirm Multi-Section Broadcast"}
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      {broadcastStep === "select"
+                        ? "Step 1 of 2: Explicitly tick the sections to broadcast to"
+                        : "Step 2 of 2: Review and confirm publication"}
+                    </p>
+                  </div>
+                </div>
+                <button onClick={() => setShowBroadcastModal(false)} className="cursor-pointer">
+                  <X className="h-5 w-5 text-slate-400 hover:text-white" />
+                </button>
+              </div>
+
+              {/* Step 1: Explicit Section Selection (All Unchecked by Default) */}
+              {broadcastStep === "select" && (
+                <div className="space-y-4">
+                  <div className="bg-slate-950/70 p-3 rounded-2xl border border-slate-800 flex items-center justify-between text-xs">
+                    <span className="text-slate-300 font-medium">
+                      All sections are unchecked by default for safety.
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSelectAllSections}
+                        className="text-cyan-400 hover:text-cyan-300 font-bold cursor-pointer"
+                      >
+                        Select All
+                      </button>
+                      <span className="text-slate-600">&bull;</span>
+                      <button
+                        type="button"
+                        onClick={handleClearAllSections}
+                        className="text-slate-400 hover:text-white font-bold cursor-pointer"
+                      >
+                        Clear All
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="max-h-60 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                    {teacherClasses.map((section) => {
+                      const isChecked = broadcastSelectedIds.includes(section.id);
+                      const isCurrent = section.id === cls.id;
+                      return (
+                        <label
+                          key={section.id}
+                          className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all cursor-pointer ${
+                            isChecked
+                              ? "bg-violet-950/40 border-violet-500/60 text-white"
+                              : "bg-slate-950/40 border-slate-800 text-slate-300 hover:border-slate-700"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => handleToggleSection(section.id)}
+                              className="h-4 w-4 rounded accent-violet-500 border-slate-700 bg-slate-900 cursor-pointer"
+                            />
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold truncate flex items-center gap-1.5">
+                                <span>{section.name}</span>
+                                {isCurrent && (
+                                  <span className="px-1.5 py-0.2 rounded text-[10px] bg-slate-800 text-slate-300 border border-slate-700">
+                                    Current
+                                  </span>
+                                )}
+                              </p>
+                              <p className="text-[11px] text-slate-400 truncate">
+                                {section.subject || "General"} &bull; {section.studentIds.length} students enrolled
+                              </p>
+                            </div>
+                          </div>
+                          <span
+                            className={`text-xs font-bold px-2 py-0.5 rounded-lg shrink-0 ${
+                              isChecked ? "bg-violet-500/20 text-violet-300" : "text-slate-500"
+                            }`}
+                          >
+                            {isChecked ? "Selected" : "Omit"}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+                    <span className="text-xs font-bold text-slate-400">
+                      <strong className="text-white">{broadcastSelectedIds.length}</strong> of {teacherClasses.length} sections selected
+                    </span>
+
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowBroadcastModal(false)}
+                        className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white bg-slate-800 rounded-xl cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={broadcastSelectedIds.length === 0}
+                        onClick={() => setBroadcastStep("confirm")}
+                        className="px-5 py-2 text-xs font-extrabold text-white bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl shadow-lg shadow-violet-600/30 cursor-pointer flex items-center gap-1.5"
+                      >
+                        <span>Review & Confirm</span>
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 2: Mandatory Confirmation Step before sending */}
+              {broadcastStep === "confirm" && (
+                <div className="space-y-4">
+                  <div className="p-4 bg-slate-950/80 border border-slate-800 rounded-2xl text-xs space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-violet-400 font-extrabold text-sm">
+                        <Layers className="h-4 w-4 shrink-0" />
+                        <span>Confirm Target Sections</span>
+                      </div>
+                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-violet-500/15 text-violet-300 border border-violet-500/30">
+                        {broadcastSelectedIds.length} {broadcastSelectedIds.length === 1 ? "section" : "sections"}
+                      </span>
+                    </div>
+                    <p className="text-slate-300 leading-relaxed text-xs">
+                      This {postType === "assignment" ? "assignment" : "announcement"} will be published to the following course feeds:
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
+                      {broadcastSelectedIds.map((id) => {
+                        const targetCls = teacherClasses.find((c) => c.id === id);
+                        return (
+                          <div
+                            key={id}
+                            className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80 flex items-center justify-between gap-2"
+                          >
+                            <div className="min-w-0">
+                              <p className="font-bold text-white text-xs truncate">{targetCls?.name || id}</p>
+                              <p className="text-[10px] text-slate-400 truncate">
+                                {targetCls?.subject || "General"} &bull; {targetCls?.studentIds.length || 0} students
+                              </p>
+                            </div>
+                            <Check className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Post Preview */}
+                  <div className="p-3.5 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-2 text-xs">
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                      <span className="font-bold text-violet-300 uppercase tracking-wider">
+                        {postType === "assignment" ? "Assignment Preview" : "Announcement Preview"}
+                      </span>
+                      {dueDate && <span>Due: {dueDate}</span>}
+                    </div>
+                    {title && <p className="font-bold text-white text-sm">{title}</p>}
+                    <p className="text-slate-300 line-clamp-3 leading-relaxed">{content}</p>
+                    {attachment && (
+                      <p className="text-[11px] text-cyan-300 font-semibold pt-1">
+                        📎 Attached: {attachment.name}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setBroadcastStep("select")}
+                      className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white bg-slate-800 rounded-xl cursor-pointer flex items-center gap-1"
+                    >
+                      <ArrowLeft className="h-3.5 w-3.5" /> Back to Selection
+                    </button>
+
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowBroadcastModal(false)}
+                        className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white bg-slate-800 rounded-xl cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={broadcastPosting}
+                        onClick={handleConfirmBroadcast}
+                        className="px-5 py-2 text-xs font-black text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-xl shadow-lg shadow-emerald-600/30 cursor-pointer flex items-center gap-1.5"
+                      >
+                        {broadcastPosting ? (
+                          "Publishing..."
+                        ) : (
+                          <>
+                            <CheckCircle2 className="h-4 w-4" />
+                            <span>Confirm & Publish to {broadcastSelectedIds.length} Sections</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {entries.length === 0 && (
         <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-10 text-center space-y-2">
@@ -1114,19 +1466,23 @@ function PostCard({
   };
 
   const handleSubmitWork = () => {
-    submitAssignment({
-      postId: post.id,
-      classId: post.classId,
-      studentId: currentUser.id,
-      studentName: currentUser.name,
-      content: submitText.trim(),
-      attachmentName: submitAttachment?.name,
-      attachmentDataUrl: submitAttachment?.dataUrl,
-    });
-    setSubmissions(getSubmissionsForPost(post.id));
-    setShowSubmitForm(false);
-    setSubmitText("");
-    setSubmitAttachment(null);
+    try {
+      submitAssignment({
+        postId: post.id,
+        classId: post.classId,
+        studentId: currentUser.id,
+        studentName: currentUser.name,
+        content: submitText.trim(),
+        attachmentName: submitAttachment?.name,
+        attachmentDataUrl: submitAttachment?.dataUrl,
+      });
+      setSubmissions(getSubmissionsForPost(post.id));
+      setShowSubmitForm(false);
+      setSubmitText("");
+      setSubmitAttachment(null);
+    } catch (err: any) {
+      alert(err?.message || "Failed to submit assignment");
+    }
   };
 
   return (
@@ -1196,10 +1552,42 @@ function PostCard({
       {isAssignment && !isTeacher && (
         <div className="pt-3 border-t border-slate-800">
           {mySubmission ? (
-            <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex items-center justify-between gap-2 text-xs">
-              <span className="text-emerald-300 font-bold flex items-center gap-1.5">
-                <CheckCircle2 className="h-4 w-4 text-emerald-400" /> Turned in on {formatDate(new Date(mySubmission.submittedAt))}
-              </span>
+            <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-emerald-300 font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-400" /> Turned in on {formatDate(new Date(mySubmission.submittedAt))}
+                  </span>
+                  {(mySubmission.isLate || mySubmission.status === "Late") && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                      Late
+                    </span>
+                  )}
+                </div>
+                {mySubmission.status === "Graded" && (
+                  <div className="text-xs text-slate-300 pt-1">
+                    <span className="font-extrabold text-cyan-400">
+                      Grade: {mySubmission.score ? (String(mySubmission.score).includes('/') ? mySubmission.score : `${mySubmission.score} / ${post.maxPoints || 100}`) : "Graded"}
+                    </span>
+                    {mySubmission.feedback && (
+                      <p className="text-slate-400 mt-0.5 italic">"{mySubmission.feedback}"</p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {mySubmission.status !== "Graded" ? (
+                <button
+                  onClick={() => setShowSubmitForm(true)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs cursor-pointer self-start sm:self-auto"
+                >
+                  Resubmit Work
+                </button>
+              ) : (
+                <span className="px-2.5 py-1 rounded-xl bg-slate-950 border border-slate-800 text-slate-400 font-bold text-[11px] self-start sm:self-auto">
+                  Graded &bull; Locked
+                </span>
+              )}
             </div>
           ) : (
             <div>
@@ -1336,12 +1724,18 @@ function AttendanceLogCard({ entry }: { entry: LogEntry & { kind: "attendance" }
 
 function Classmates({ cls, isTeacher }: { cls: ClassRoom; isTeacher: boolean }) {
   const [rows, setRows] = useState(getClassmatesWithStats(cls.id));
+  const [blockedStudents, setBlockedStudents] = useState<User[]>(() => getBlockedStudentsForClass(cls.id));
   const [addId, setAddId] = useState("");
   const [addError, setAddError] = useState("");
   const [studentToRemove, setStudentToRemove] = useState<{ id: string; name: string } | null>(null);
+  const [studentToBlock, setStudentToBlock] = useState<{ id: string; name: string } | null>(null);
+  const [actionSuccess, setActionSuccess] = useState("");
 
   useEffect(() => {
-    const refresh = () => setRows(getClassmatesWithStats(cls.id));
+    const refresh = () => {
+      setRows(getClassmatesWithStats(cls.id));
+      setBlockedStudents(getBlockedStudentsForClass(cls.id));
+    };
     refresh();
     window.addEventListener("db_updated", refresh);
     return () => window.removeEventListener("db_updated", refresh);
@@ -1355,6 +1749,11 @@ function Classmates({ cls, isTeacher }: { cls: ClassRoom; isTeacher: boolean }) 
       setAddError("No student registered with that ID.");
       return;
     }
+    // Check if the student is currently blocked
+    if (cls.blockedStudentIds?.some((bid) => bid.toLowerCase() === match.id.toLowerCase())) {
+      setAddError("This student is currently blocked from this section. Unblock them below first.");
+      return;
+    }
     addStudentToClass(cls.id, match.id);
     setRows(getClassmatesWithStats(cls.id));
     setAddId("");
@@ -1365,89 +1764,188 @@ function Classmates({ cls, isTeacher }: { cls: ClassRoom; isTeacher: boolean }) 
     if (!studentToRemove) return;
     removeStudentFromClass(cls.id, studentToRemove.id);
     setRows(getClassmatesWithStats(cls.id));
+    setActionSuccess(`${studentToRemove.name} removed from section roster. They can rejoin with the code.`);
     setStudentToRemove(null);
+    setTimeout(() => setActionSuccess(""), 4000);
+  };
+
+  const handleConfirmBlock = () => {
+    if (!studentToBlock) return;
+    blockStudentFromClass(cls.id, studentToBlock.id);
+    setRows(getClassmatesWithStats(cls.id));
+    setBlockedStudents(getBlockedStudentsForClass(cls.id));
+    setActionSuccess(`${studentToBlock.name} has been blocked and barred from rejoining ${cls.name}.`);
+    setStudentToBlock(null);
+    setTimeout(() => setActionSuccess(""), 4000);
+  };
+
+  const handleUnblock = (studentId: string, studentName: string) => {
+    unblockStudentFromClass(cls.id, studentId);
+    setBlockedStudents(getBlockedStudentsForClass(cls.id));
+    setActionSuccess(`${studentName} unblocked. They may now rejoin using the section join code.`);
+    setTimeout(() => setActionSuccess(""), 4000);
   };
 
   return (
-    <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
-        <div>
-          <h3 className="text-base font-extrabold text-white flex items-center gap-2">
-            <Users className="h-5 w-5 text-violet-400" /> Enrolled Section Roster
-          </h3>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Students currently enrolled in <span className="text-white font-bold">{cls.name}</span>.
-          </p>
+    <div className="space-y-6">
+      {actionSuccess && (
+        <div className="p-3 bg-emerald-500/20 border border-emerald-500/40 rounded-2xl text-emerald-300 text-xs font-bold flex items-center gap-2">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span>{actionSuccess}</span>
+        </div>
+      )}
+
+      {/* Active Section Roster Card */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+          <div>
+            <h3 className="text-base font-extrabold text-white flex items-center gap-2">
+              <Users className="h-5 w-5 text-violet-400" /> Enrolled Section Roster ({rows.length})
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Students currently enrolled in <span className="text-white font-bold">{cls.name}</span>.
+            </p>
+          </div>
+
+          {isTeacher && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                value={addId}
+                onChange={(e) => setAddId(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+                placeholder="Enter Student ID (e.g. student101)"
+                className="px-3.5 py-2 text-xs font-bold rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-violet-500"
+              />
+              <button
+                onClick={handleAdd}
+                className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-extrabold text-xs shadow-md cursor-pointer"
+              >
+                Enroll Student
+              </button>
+            </div>
+          )}
         </div>
 
-        {isTeacher && (
-          <div className="flex items-center gap-2 flex-wrap">
-            <input
-              value={addId}
-              onChange={(e) => setAddId(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-              placeholder="Enter Student ID (e.g. student101)"
-              className="px-3.5 py-2 text-xs font-bold rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-violet-500"
-            />
-            <button
-              onClick={handleAdd}
-              className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-extrabold text-xs shadow-md cursor-pointer"
-            >
-              Enroll Student
-            </button>
+        {addError && <p className="text-xs text-rose-400 font-bold">{addError}</p>}
+
+        {rows.length === 0 ? (
+          <div className="p-8 text-center text-slate-400 text-xs">No students enrolled in this section yet.</div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {rows.map(({ student, stats }) => (
+              <div
+                key={student.id}
+                className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 flex items-center justify-between gap-3 hover:border-violet-500/40 transition-colors"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-2xl bg-violet-500/20 border border-violet-500/40 text-violet-300 font-black text-sm flex items-center justify-center shrink-0">
+                    {student.name.charAt(0)}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-white truncate">{student.name}</p>
+                    <p className="text-[11px] text-slate-400">
+                      Attendance: <span className="text-emerald-400 font-bold">{stats.percentage}%</span> &bull; ({stats.presentCount}P / {stats.lateCount}L / {stats.absentCount}A)
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={() => openDirectMessage(student.id)}
+                    className="px-3 py-1.5 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 text-violet-300 border border-violet-500/30 text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                    title={`Direct Message ${student.name}`}
+                  >
+                    <MessageCircle className="h-3.5 w-3.5" />
+                    <span>DM</span>
+                  </button>
+
+                  {isTeacher && (
+                    <>
+                      {/* Action 1: Remove (Kicks student, can rejoin with code) */}
+                      <button
+                        onClick={() => setStudentToRemove({ id: student.id, name: student.name })}
+                        className="p-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 cursor-pointer transition-colors"
+                        title={`Remove ${student.name} from ${cls.name} (can rejoin with code)`}
+                      >
+                        <UserMinus className="h-4 w-4" />
+                      </button>
+
+                      {/* Action 2: Block (Kicks student and bars from rejoining) */}
+                      <button
+                        onClick={() => setStudentToBlock({ id: student.id, name: student.name })}
+                        className="p-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 cursor-pointer transition-colors"
+                        title={`Block ${student.name} from ${cls.name} (barred from rejoining)`}
+                      >
+                        <Ban className="h-4 w-4" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
 
-      {addError && <p className="text-xs text-rose-400 font-bold">{addError}</p>}
-
-      {rows.length === 0 ? (
-        <div className="p-8 text-center text-slate-400 text-xs">No students enrolled in this section yet.</div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {rows.map(({ student, stats }) => (
-            <div
-              key={student.id}
-              className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 flex items-center justify-between gap-3 hover:border-violet-500/40 transition-colors"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-2xl bg-violet-500/20 border border-violet-500/40 text-violet-300 font-black text-sm flex items-center justify-center shrink-0">
-                  {student.name.charAt(0)}
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-bold text-white truncate">{student.name}</p>
-                  <p className="text-[11px] text-slate-400">
-                    Attendance: <span className="text-emerald-400 font-bold">{stats.percentage}%</span> &bull; ({stats.presentCount}P / {stats.lateCount}L / {stats.absentCount}A)
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  onClick={() => openDirectMessage(student.id)}
-                  className="px-3 py-1.5 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 text-violet-300 border border-violet-500/30 text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
-                  title={`Direct Message ${student.name}`}
-                >
-                  <MessageCircle className="h-3.5 w-3.5" />
-                  <span>DM</span>
-                </button>
-
-                {isTeacher && (
-                  <button
-                    onClick={() => setStudentToRemove({ id: student.id, name: student.name })}
-                    className="p-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 cursor-pointer transition-colors"
-                    title={`Remove ${student.name} from ${cls.name}`}
-                  >
-                    <UserMinus className="h-4 w-4" />
-                  </button>
-                )}
+      {/* Blocked / Barred Students List */}
+      {isTeacher && (
+        <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="h-5 w-5 text-rose-400" />
+              <div>
+                <h4 className="font-extrabold text-white text-sm">
+                  Blocked Students ({blockedStudents.length})
+                </h4>
+                <p className="text-[11px] text-slate-400">
+                  Students barred from joining this section with any code. Unblocking allows them to rejoin.
+                </p>
               </div>
             </div>
-          ))}
+            {blockedStudents.length > 0 && (
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                {blockedStudents.length} Barred
+              </span>
+            )}
+          </div>
+
+          {blockedStudents.length === 0 ? (
+            <p className="text-xs text-slate-500 py-2">
+              No students are currently blocked from this section.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {blockedStudents.map((student) => (
+                <div
+                  key={student.id}
+                  className="p-3.5 rounded-2xl bg-rose-950/20 border border-rose-500/30 flex items-center justify-between gap-3"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-300 font-bold text-xs flex items-center justify-center shrink-0">
+                      {student.name.charAt(0)}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-white truncate">{student.name}</p>
+                      <p className="text-[10px] text-slate-400 font-mono">ID: {student.id}</p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => handleUnblock(student.id, student.name)}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-cyan-200 border border-slate-700 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors shrink-0"
+                    title={`Unblock ${student.name} so they can rejoin`}
+                  >
+                    <ShieldOff className="h-3.5 w-3.5 text-cyan-400" />
+                    <span>Unblock</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Remove from class confirmation modal */}
+      {/* Remove from class confirmation modal (kick: can rejoin with code) */}
       <AnimatePresence>
         {studentToRemove && (
           <motion.div
@@ -1473,9 +1971,12 @@ function Classmates({ cls, isTeacher }: { cls: ClassRoom; isTeacher: boolean }) 
                   <strong className="text-white">{studentToRemove.name}</strong> ({studentToRemove.id}) from{" "}
                   <strong className="text-amber-300">{cls.name}</strong>?
                 </p>
-                <p className="text-[11px] text-slate-400 leading-relaxed bg-slate-950/60 p-3 rounded-xl border border-slate-800">
-                  The student will be removed from this section roster. Their user account will remain active.
-                </p>
+                <div className="text-[11px] text-amber-200/90 leading-relaxed bg-amber-950/40 p-3 rounded-xl border border-amber-500/30 space-y-1">
+                  <p className="font-bold">✓ Rejoinable via Code:</p>
+                  <p className="text-slate-300">
+                    The student will be removed from this section roster. They are permitted to rejoin if they re-enter the section join code.
+                  </p>
+                </div>
               </div>
 
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
@@ -1493,6 +1994,65 @@ function Classmates({ cls, isTeacher }: { cls: ClassRoom; isTeacher: boolean }) 
                 >
                   <UserMinus className="h-4 w-4" />
                   <span>Remove from Section</span>
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Block from class confirmation modal (ban: barred from rejoining with code) */}
+      <AnimatePresence>
+        {studentToBlock && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4"
+          >
+            <div className="bg-slate-900 border border-rose-500/50 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl text-white">
+              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-2 text-rose-400">
+                  <Ban className="h-5 w-5" />
+                  <h3 className="font-extrabold text-base">Block Student from Section</h3>
+                </div>
+                <button onClick={() => setStudentToBlock(null)} className="cursor-pointer">
+                  <X className="h-5 w-5 text-slate-400 hover:text-white" />
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs text-slate-200 leading-relaxed">
+                  Are you sure you want to block{" "}
+                  <strong className="text-white">{studentToBlock.name}</strong> ({studentToBlock.id}) from{" "}
+                  <strong className="text-rose-300">{cls.name}</strong>?
+                </p>
+                <div className="text-[11px] text-rose-200/90 leading-relaxed bg-rose-950/50 p-3 rounded-xl border border-rose-500/40 space-y-1">
+                  <p className="font-bold flex items-center gap-1.5 text-rose-300">
+                    <ShieldAlert className="h-4 w-4 shrink-0" />
+                    Barred from Rejoining:
+                  </p>
+                  <p className="text-slate-300">
+                    The student will be kicked immediately and barred from rejoining this section even if they enter the join code. You can unblock them at any time from the Blocked Students list.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setStudentToBlock(null)}
+                  className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white bg-slate-800 rounded-xl border border-slate-700 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmBlock}
+                  className="px-5 py-2 text-xs font-extrabold text-white bg-rose-600 hover:bg-rose-500 rounded-xl shadow-lg shadow-rose-600/30 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Ban className="h-4 w-4" />
+                  <span>Block & Bar Student</span>
                 </button>
               </div>
             </div>

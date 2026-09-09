@@ -6,6 +6,7 @@ import {
   attachRealtimeListeners,
   attachSecurityLogsListener,
   attachDirectMessagesListener,
+  attachSubmissionsListener,
   updateUserActivity
 } from "./lib/db";
 import { auth, db } from "./lib/firebase";
@@ -166,6 +167,7 @@ export default function App() {
             if (profile.id) {
               attachDirectMessagesListener(profile.id);
             }
+            attachSubmissionsListener(profile);
           }
         } catch (err) {
           console.error("Error restoring session:", err);

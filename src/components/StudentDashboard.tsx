@@ -363,23 +363,30 @@ export default function StudentDashboard({
     if (!selectedAssignmentForSubmission) return;
 
     setIsSubmittingWork(true);
-    submitAssignment({
-      postId: selectedAssignmentForSubmission.id,
-      studentId: user.id,
-      studentName: dbUser.name,
-      content: submissionText,
-      attachmentName: attachmentName || undefined,
-      attachmentDataUrl: attachmentDataUrl || undefined,
-    });
+    setSubmissionFileError(null);
 
-    setIsSubmittingWork(false);
-    setSubmissionSuccess("Assignment submitted successfully!");
-    loadData();
+    try {
+      submitAssignment({
+        postId: selectedAssignmentForSubmission.id,
+        studentId: user.id,
+        studentName: dbUser.name,
+        content: submissionText,
+        attachmentName: attachmentName || undefined,
+        attachmentDataUrl: attachmentDataUrl || undefined,
+      });
 
-    setTimeout(() => {
-      setSubmissionSuccess(null);
-      setSelectedAssignmentForSubmission(null);
-    }, 1800);
+      setIsSubmittingWork(false);
+      setSubmissionSuccess("Assignment submitted successfully!");
+      loadData();
+
+      setTimeout(() => {
+        setSubmissionSuccess(null);
+        setSelectedAssignmentForSubmission(null);
+      }, 1800);
+    } catch (err: any) {
+      setIsSubmittingWork(false);
+      setSubmissionFileError(err?.message || "Failed to submit assignment.");
+    }
   };
 
   // Password update handler
@@ -1023,8 +1030,8 @@ export default function StudentDashboard({
           >
             <DailyCheckinsTab
               currentUser={dbUser}
-              allStudents={allStudents}
-              attendanceRecords={allAttendanceRecords}
+              allStudents={allStudents.filter((s) => s.id.toLowerCase() === dbUser.id.toLowerCase())}
+              attendanceRecords={allAttendanceRecords.filter((r) => r.studentId.toLowerCase() === dbUser.id.toLowerCase())}
               onSelectStudent={(st) => setViewingStudent(st)}
             />
           </motion.div>
@@ -1341,7 +1348,9 @@ export default function StudentDashboard({
                             <span className="flex items-center gap-1">
                               <Award className="h-4 w-4 text-emerald-600" /> Grade Received:
                             </span>
-                            <span className="text-sm font-mono">{sub.score} / {assignment.maxPoints || 100}</span>
+                            <span className="text-sm font-mono">
+                              {String(sub.score).includes('/') ? sub.score : `${sub.score} / ${assignment.maxPoints || 100}`}
+                            </span>
                           </div>
                           {sub.feedback && (
                             <p className="text-[11px] text-emerald-700/90 italic">
@@ -1626,141 +1635,179 @@ export default function StudentDashboard({
                   </div>
                 )}
 
-                <form onSubmit={handleSubmitWork} className="space-y-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-ink-soft block">
-                      Your Solution / Work Description:
-                    </label>
-                    <textarea
-                      value={submissionText}
-                      onChange={(e) => setSubmissionText(e.target.value)}
-                      placeholder="Type your response or answers here..."
-                      rows={4}
-                      required
-                      className="w-full p-3 text-xs bg-slate-900/90 border border-ink-soft/20 rounded-2xl focus:outline-none focus:border-teal-400 text-ink placeholder:text-ink-soft/40 resize-none"
-                    />
-                  </div>
+                {(() => {
+                  const activeSub = getSubmissionForStudent(selectedAssignmentForSubmission.id, user.id);
+                  const isGradedLocked = activeSub?.status === "Graded";
 
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold text-ink-soft block">
-                      Attach Your Solution File / Photo:
-                    </label>
-
-                    {attachmentDataUrl ? (
-                      <div className="p-3 bg-slate-900/90 border border-teal-500/40 rounded-2xl space-y-2">
-                        {attachmentDataUrl.startsWith("data:image/") || /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(attachmentName || "") ? (
-                          <div className="flex items-center gap-3">
-                            <img
-                              src={attachmentDataUrl}
-                              alt="Upload preview"
-                              className="h-16 w-16 object-cover rounded-xl border border-ink-soft/20 cursor-pointer"
-                              onClick={() => window.open(attachmentDataUrl, "_blank")}
-                            />
-                            <div className="flex-1 min-w-0">
-                              <p className="text-xs font-bold text-teal-300 truncate">{attachmentName || "Attached Image"}</p>
-                              <p className="text-[10px] text-ink-soft/70">Image uploaded and optimized</p>
-                              <a
-                                href={attachmentDataUrl}
-                                download={attachmentName || "my-submission.jpg"}
-                                className="text-[11px] text-teal-400 hover:text-teal-300 underline font-bold mt-0.5 inline-block"
-                              >
-                                Preview / Download
-                              </a>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setAttachmentName("");
-                                setAttachmentDataUrl("");
-                              }}
-                              className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-500/20 rounded-xl cursor-pointer"
-                              title="Remove file"
-                            >
-                              <X className="h-4 w-4" />
-                            </button>
+                  return (
+                    <>
+                      {isGradedLocked && (
+                        <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl space-y-2">
+                          <div className="flex items-center justify-between font-extrabold text-emerald-400 text-xs">
+                            <span className="flex items-center gap-1.5">
+                              <Award className="h-4 w-4 text-emerald-400" /> Officially Graded
+                            </span>
+                            <span className="font-mono text-sm px-2.5 py-0.5 rounded-lg bg-emerald-500/20 border border-emerald-500/30">
+                              {String(activeSub.score).includes('/') ? activeSub.score : `${activeSub.score} / ${selectedAssignmentForSubmission.maxPoints || 100}`}
+                            </span>
                           </div>
-                        ) : (
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <Paperclip className="h-4 w-4 text-teal-400 shrink-0" />
-                              <span className="text-xs font-bold text-teal-300 truncate">{attachmentName || "Attached Document"}</span>
+                          {activeSub.feedback && (
+                            <div className="text-xs text-slate-300 pt-1 border-t border-emerald-500/20">
+                              <span className="font-bold text-slate-400">Teacher Feedback: </span>
+                              <span className="italic">"{activeSub.feedback}"</span>
                             </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              <a
-                                href={attachmentDataUrl}
-                                download={attachmentName || "my-submission"}
-                                className="text-[11px] font-bold text-teal-400 hover:text-teal-300 underline"
-                              >
-                                View
-                              </a>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setAttachmentName("");
-                                  setAttachmentDataUrl("");
-                                }}
-                                className="p-1 text-rose-400 hover:text-rose-300 hover:bg-rose-500/20 rounded-lg cursor-pointer"
-                                title="Remove file"
-                              >
-                                <X className="h-4 w-4" />
-                              </button>
-                            </div>
+                          )}
+                          <p className="text-[11px] text-emerald-400/90 font-semibold">
+                            This coursework has been graded by your instructor. Further submissions are locked.
+                          </p>
+                        </div>
+                      )}
+
+                      <form onSubmit={handleSubmitWork} className="space-y-4">
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold text-ink-soft block">
+                            Your Solution / Work Description:
+                          </label>
+                          <textarea
+                            value={submissionText}
+                            onChange={(e) => setSubmissionText(e.target.value)}
+                            placeholder="Type your response or answers here..."
+                            rows={4}
+                            required
+                            readOnly={isGradedLocked}
+                            className={`w-full p-3 text-xs bg-slate-900/90 border border-ink-soft/20 rounded-2xl focus:outline-none text-ink placeholder:text-ink-soft/40 resize-none ${
+                              isGradedLocked ? "opacity-75 cursor-not-allowed" : "focus:border-teal-400"
+                            }`}
+                          />
+                        </div>
+
+                        {!isGradedLocked && (
+                          <div className="space-y-2">
+                            <label className="text-xs font-bold text-ink-soft block">
+                              Attach Your Solution File / Photo:
+                            </label>
+
+                            {attachmentDataUrl ? (
+                              <div className="p-3 bg-slate-900/90 border border-teal-500/40 rounded-2xl space-y-2">
+                                {attachmentDataUrl.startsWith("data:image/") || /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(attachmentName || "") ? (
+                                  <div className="flex items-center gap-3">
+                                    <img
+                                      src={attachmentDataUrl}
+                                      alt="Upload preview"
+                                      className="h-16 w-16 object-cover rounded-xl border border-ink-soft/20 cursor-pointer"
+                                      onClick={() => window.open(attachmentDataUrl, "_blank")}
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-xs font-bold text-teal-300 truncate">{attachmentName || "Attached Image"}</p>
+                                      <p className="text-[10px] text-ink-soft/70">Image uploaded and optimized</p>
+                                      <a
+                                        href={attachmentDataUrl}
+                                        download={attachmentName || "my-submission.jpg"}
+                                        className="text-[11px] text-teal-400 hover:text-teal-300 underline font-bold mt-0.5 inline-block"
+                                      >
+                                        Preview / Download
+                                      </a>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setAttachmentName("");
+                                        setAttachmentDataUrl("");
+                                      }}
+                                      className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-500/20 rounded-xl cursor-pointer"
+                                      title="Remove file"
+                                    >
+                                      <X className="h-4 w-4" />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <Paperclip className="h-4 w-4 text-teal-400 shrink-0" />
+                                      <span className="text-xs font-bold text-teal-300 truncate">{attachmentName || "Attached Document"}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <a
+                                        href={attachmentDataUrl}
+                                        download={attachmentName || "my-submission"}
+                                        className="text-[11px] font-bold text-teal-400 hover:text-teal-300 underline"
+                                      >
+                                        View
+                                      </a>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setAttachmentName("");
+                                          setAttachmentDataUrl("");
+                                        }}
+                                        className="p-1 text-rose-400 hover:text-rose-300 hover:bg-rose-500/20 rounded-lg cursor-pointer"
+                                        title="Remove file"
+                                      >
+                                        <X className="h-4 w-4" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+
+                                <div className="pt-1 flex items-center justify-end">
+                                  <label className="text-[11px] font-extrabold text-slate-300 hover:text-white cursor-pointer underline">
+                                    Replace File
+                                    <input
+                                      type="file"
+                                      onChange={handleFileChange}
+                                      className="hidden"
+                                      accept="image/*,.pdf,.doc,.docx,.txt"
+                                    />
+                                  </label>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-3">
+                                <label className="px-4 py-2.5 text-xs font-extrabold text-teal-300 bg-teal-950/80 border border-teal-500/40 hover:bg-teal-900/80 rounded-xl cursor-pointer transition-all flex items-center gap-1.5 shadow-sm">
+                                  <Paperclip className="h-4 w-4" />
+                                  Choose File / Image
+                                  <input
+                                    type="file"
+                                    onChange={handleFileChange}
+                                    className="hidden"
+                                    accept="image/*,.pdf,.doc,.docx,.txt"
+                                  />
+                                </label>
+                                <span className="text-xs font-mono text-ink-soft/70 truncate">
+                                  No file selected (optional)
+                                </span>
+                              </div>
+                            )}
+
+                            {submissionFileError && (
+                              <p className="text-[11px] font-bold text-rose-400">{submissionFileError}</p>
+                            )}
                           </div>
                         )}
 
-                        <div className="pt-1 flex items-center justify-end">
-                          <label className="text-[11px] font-extrabold text-slate-300 hover:text-white cursor-pointer underline">
-                            Replace File
-                            <input
-                              type="file"
-                              onChange={handleFileChange}
-                              className="hidden"
-                              accept="image/*,.pdf,.doc,.docx,.txt"
-                            />
-                          </label>
+                        <div className="flex justify-end gap-2 pt-2 border-t border-ink-soft/10">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedAssignmentForSubmission(null)}
+                            className="px-4 py-2.5 text-xs font-bold text-slate-300 bg-slate-800/80 border border-slate-700 rounded-xl hover:bg-slate-700 cursor-pointer"
+                          >
+                            {isGradedLocked ? "Close" : "Cancel"}
+                          </button>
+                          {!isGradedLocked && (
+                            <button
+                              type="submit"
+                              disabled={isSubmittingWork}
+                              className="px-5 py-2.5 text-xs font-extrabold text-white bg-teal-500 rounded-xl hover:bg-teal-600 cursor-pointer shadow-md shadow-teal-500/20 flex items-center gap-2"
+                            >
+                              <Send className="h-4 w-4" />
+                              Submit Assignment
+                            </button>
+                          )}
                         </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-3">
-                        <label className="px-4 py-2.5 text-xs font-extrabold text-teal-300 bg-teal-950/80 border border-teal-500/40 hover:bg-teal-900/80 rounded-xl cursor-pointer transition-all flex items-center gap-1.5 shadow-sm">
-                          <Paperclip className="h-4 w-4" />
-                          Choose File / Image
-                          <input
-                            type="file"
-                            onChange={handleFileChange}
-                            className="hidden"
-                            accept="image/*,.pdf,.doc,.docx,.txt"
-                          />
-                        </label>
-                        <span className="text-xs font-mono text-ink-soft/70 truncate">
-                          No file selected (optional)
-                        </span>
-                      </div>
-                    )}
-
-                    {submissionFileError && (
-                      <p className="text-[11px] font-bold text-rose-400">{submissionFileError}</p>
-                    )}
-                  </div>
-
-                  <div className="flex justify-end gap-2 pt-2 border-t border-ink-soft/10">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedAssignmentForSubmission(null)}
-                      className="px-4 py-2.5 text-xs font-bold text-slate-300 bg-slate-800/80 border border-slate-700 rounded-xl hover:bg-slate-700 cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={isSubmittingWork}
-                      className="px-5 py-2.5 text-xs font-extrabold text-white bg-teal-500 rounded-xl hover:bg-teal-600 cursor-pointer shadow-md shadow-teal-500/20 flex items-center gap-2"
-                    >
-                      <Send className="h-4 w-4" />
-                      Submit Assignment
-                    </button>
-                  </div>
-                </form>
+                      </form>
+                    </>
+                  );
+                })()}
               </motion.div>
             </motion.div>
           )}

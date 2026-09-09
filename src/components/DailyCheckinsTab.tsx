@@ -49,6 +49,16 @@ export default function DailyCheckinsTab({
     return attendanceRecords.filter((r) => r.date === selectedDate);
   }, [attendanceRecords, selectedDate]);
 
+  // FERPA / Student Privacy Protection:
+  // If the logged-in user is a student, scope visible students strictly to their own account.
+  // Classmates and school-wide directory rosters remain private.
+  const targetStudents = useMemo(() => {
+    if (currentUser.role === "student") {
+      return allStudents.filter((s) => s.id.toLowerCase() === currentUser.id.toLowerCase());
+    }
+    return allStudents;
+  }, [allStudents, currentUser]);
+
   // Create a map of studentId -> AttendanceRecord for quick lookup
   const recordMap = useMemo(() => {
     const map = new Map<string, AttendanceRecord>();
@@ -60,7 +70,7 @@ export default function DailyCheckinsTab({
 
   // Combined student list with check-in status
   const studentCheckins = useMemo(() => {
-    return allStudents.map((student) => {
+    return targetStudents.map((student) => {
       const record = recordMap.get(student.id.toLowerCase());
       return {
         student,
@@ -69,7 +79,7 @@ export default function DailyCheckinsTab({
         status: record ? record.status : ("Not Checked In" as const),
       };
     });
-  }, [allStudents, recordMap]);
+  }, [targetStudents, recordMap]);
 
   // Filtered list based on search query and status filter
   const filteredStudents = useMemo(() => {
@@ -98,7 +108,7 @@ export default function DailyCheckinsTab({
   }, [studentCheckins, searchQuery, statusFilter]);
 
   // Summary Metrics
-  const totalStudents = allStudents.length;
+  const totalStudents = targetStudents.length;
   const totalCheckedIn = recordsForDate.length;
   const presentCount = recordsForDate.filter((r) => r.status === "Present").length;
   const lateCount = recordsForDate.filter((r) => r.status === "Late").length;
@@ -111,6 +121,8 @@ export default function DailyCheckinsTab({
   const modalStudentHistory = infoModalStudent
     ? attendanceRecords.filter((r) => r.studentId.toLowerCase() === infoModalStudent.id.toLowerCase())
     : [];
+
+  const isStudentView = currentUser.role === "student";
 
   return (
     <div className="space-y-6">
@@ -126,7 +138,9 @@ export default function DailyCheckinsTab({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-xl font-black text-ink font-display">Daily Attendance Sheet</h2>
+              <h2 className="text-xl font-black text-ink font-display">
+                {isStudentView ? "My Daily Attendance Status" : "Daily Attendance Sheet"}
+              </h2>
               {isToday && (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-teal-500/15 text-teal-300 border border-teal-500/30">
                   <span className="h-2 w-2 rounded-full bg-teal-400 animate-pulse" /> Live Today
@@ -134,7 +148,9 @@ export default function DailyCheckinsTab({
               )}
             </div>
             <p className="text-xs text-ink-soft/70">
-              View real-time student check-ins and complete student profiles.
+              {isStudentView
+                ? "View your personal check-in records and verified attendance history."
+                : "View real-time student check-ins and complete student profiles."}
             </p>
           </div>
         </div>

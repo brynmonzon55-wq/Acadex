@@ -3,14 +3,20 @@ import { getFirestore } from "firebase/firestore";
 import { getAuth, createUserWithEmailAndPassword, signOut, GoogleAuthProvider } from "firebase/auth";
 import firebaseConfig from "../../firebase-config.json";
 
+// Active Firebase configuration with optional env override
+const activeConfig = {
+  ...firebaseConfig,
+  ...(import.meta.env.VITE_FIREBASE_API_KEY ? { apiKey: import.meta.env.VITE_FIREBASE_API_KEY } : {}),
+};
+
 // Initialize Firebase
-const app = initializeApp(firebaseConfig);
+const app = initializeApp(activeConfig);
 
 // Initialize Firestore. Uses a named database if the config specifies one
 // (firestoreDatabaseId), otherwise falls back to the project's "(default)"
 // database.
-export const db = "firestoreDatabaseId" in firebaseConfig
-  ? getFirestore(app, (firebaseConfig as { firestoreDatabaseId: string }).firestoreDatabaseId)
+export const db = "firestoreDatabaseId" in activeConfig
+  ? getFirestore(app, (activeConfig as { firestoreDatabaseId: string }).firestoreDatabaseId)
   : getFirestore(app);
 
 // Real Firebase Authentication - passwords are hashed & managed by Firebase,
@@ -29,7 +35,7 @@ googleProvider.setCustomParameters({ prompt: "select_account" });
 // tear it down. The teacher's own session (on the primary `auth`) is never
 // touched.
 export async function createUserWithoutSigningIn(email: string, password: string) {
-  const secondaryApp = initializeApp(firebaseConfig, `secondary-${Date.now()}`);
+  const secondaryApp = initializeApp(activeConfig, `secondary-${Date.now()}`);
   const secondaryAuth = getAuth(secondaryApp);
   try {
     const cred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
@@ -48,5 +54,6 @@ export async function createUserWithoutSigningIn(email: string, password: string
 // Synthetic email used since this app logs in with a "Student/Teacher ID"
 // rather than a real email address. Firebase Auth requires an email format.
 export function idToAuthEmail(id: string): string {
-  return `${id.trim().toLowerCase()}@attendance-hub.local`;
+  const sanitized = id.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "_");
+  return `${sanitized || "user"}@attendance-hub.local`;
 }
