@@ -7,7 +7,7 @@ import {
   Lock, Globe, MessageCircle, Ban, ShieldOff, Layers, Info, LogOut
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { User, ClassRoom, ClassPost, PostComment, AssignmentSubmission, AttendanceRecord, AttendanceStatus } from "../types";
+import { User, ClassRoom, ClassPost, PostComment, AssignmentSubmission, AttendanceRecord, AttendanceStatus, PostAudience } from "../types";
 import {
   getClassesForTeacher, getClassesForStudent, getClassById, createClass,
   addStudentToClass, removeStudentFromClass, blockStudentFromClass, unblockStudentFromClass, getBlockedStudentsForClass, joinClassByCode,
@@ -19,8 +19,9 @@ import {
 } from "../lib/db";
 import { openDirectMessage } from "./ClassMessenger";
 import { processFileUpload } from "../lib/fileUtils";
-import { linkifyText } from "../lib/linkify";
+import { linkifyText, hasJoinCode } from "../lib/linkify";
 import PostCommentsSection from "./PostCommentsSection";
+import JoinCodePill from "./JoinCodePill";
 
 function timeAgo(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -891,6 +892,8 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
   // Multi-section broadcast safety flow state
   const [showBroadcastModal, setShowBroadcastModal] = useState(false);
   const [broadcastStep, setBroadcastStep] = useState<"select" | "confirm">("select");
+  const [broadcastAudience, setBroadcastAudience] = useState<PostAudience>("sections");
+  const [broadcastIncludeClassCode, setBroadcastIncludeClassCode] = useState(true);
   const [broadcastSelectedIds, setBroadcastSelectedIds] = useState<string[]>([]);
   const [broadcastPosting, setBroadcastPosting] = useState(false);
   const [broadcastSuccessMsg, setBroadcastSuccessMsg] = useState("");
@@ -954,6 +957,8 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
       return;
     }
     setFileError("");
+    setBroadcastAudience("sections");
+    setBroadcastIncludeClassCode(true);
     // Crucial safety constraint: ALL UNCHECKED by default, no pre-selection
     setBroadcastSelectedIds([]);
     setBroadcastStep("select");
@@ -975,32 +980,62 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
   };
 
   const handleConfirmBroadcast = () => {
-    if (broadcastPosting || broadcastSelectedIds.length === 0) return;
+    if (broadcastPosting) return;
+    if (broadcastAudience === "sections" && broadcastSelectedIds.length === 0) return;
     setBroadcastPosting(true);
 
-    const inputs = broadcastSelectedIds.map((targetClassId) => {
-      const targetCls = teacherClasses.find((c) => c.id === targetClassId);
-      return {
-        classId: targetClassId,
+    if (broadcastAudience === "all" || broadcastAudience === "students" || broadcastAudience === "teachers") {
+      const audienceClassId =
+        broadcastAudience === "students" ? "all_students" : broadcastAudience === "teachers" ? "all_teachers" : "all";
+      createPost({
+        classId: audienceClassId,
         type: postType,
         authorId: currentUser.id,
         authorName: currentUser.name,
         title: postType === "assignment" ? title.trim() : (title.trim() || "Announcement"),
-        subject: targetCls?.subject || "General",
+        subject: cls.subject || "General",
         content: content.trim(),
         dueDate: postType === "assignment" && dueDate ? dueDate : undefined,
         attachmentName: attachment?.name,
         attachmentDataUrl: attachment?.dataUrl,
-      };
-    });
+        targetAudience: broadcastAudience,
+        classCode: broadcastIncludeClassCode ? cls.joinCode : undefined,
+        className: broadcastIncludeClassCode ? cls.name : undefined,
+      });
+      setBroadcastSuccessMsg(
+        broadcastAudience === "students"
+          ? `Broadcast published to All Students school-wide! Students without a class can view and join with code ${cls.joinCode}.`
+          : broadcastAudience === "teachers"
+          ? "Broadcast published to All Teachers & Faculty!"
+          : "Campus-Wide broadcast published to Everyone!"
+      );
+    } else {
+      const inputs = broadcastSelectedIds.map((targetClassId) => {
+        const targetCls = teacherClasses.find((c) => c.id === targetClassId);
+        return {
+          classId: targetClassId,
+          type: postType,
+          authorId: currentUser.id,
+          authorName: currentUser.name,
+          title: postType === "assignment" ? title.trim() : (title.trim() || "Announcement"),
+          subject: targetCls?.subject || "General",
+          content: content.trim(),
+          dueDate: postType === "assignment" && dueDate ? dueDate : undefined,
+          attachmentName: attachment?.name,
+          attachmentDataUrl: attachment?.dataUrl,
+          targetAudience: "sections" as const,
+        };
+      });
 
-    createMultiplePosts(inputs);
+      createMultiplePosts(inputs);
+      setBroadcastSuccessMsg(`Successfully broadcast to ${broadcastSelectedIds.length} sections.`);
+    }
+
     setPosts(getPostsForClass(cls.id));
     setShowBroadcastModal(false);
     resetComposer();
     setBroadcastPosting(false);
-    setBroadcastSuccessMsg(`Successfully broadcast to ${broadcastSelectedIds.length} sections.`);
-    setTimeout(() => setBroadcastSuccessMsg(""), 4000);
+    setTimeout(() => setBroadcastSuccessMsg(""), 5000);
   };
 
   const entries: LogEntry[] = [
@@ -1150,81 +1185,203 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
                 </button>
               </div>
 
-              {/* Step 1: Explicit Section Selection (All Unchecked by Default) */}
+              {/* Step 1: Explicit Section or Audience Selection */}
               {broadcastStep === "select" && (
                 <div className="space-y-4">
-                  <div className="bg-slate-950/70 p-3 rounded-2xl border border-slate-800 flex items-center justify-between text-xs">
-                    <span className="text-slate-300 font-medium">
-                      All sections are unchecked by default for safety.
-                    </span>
-                    <div className="flex items-center gap-2">
+                  {/* Audience Scope Selector */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-300">Choose Broadcast Audience:</label>
+                    <div className="grid grid-cols-2 gap-2">
                       <button
                         type="button"
-                        onClick={handleSelectAllSections}
-                        className="text-cyan-400 hover:text-cyan-300 font-bold cursor-pointer"
+                        onClick={() => setBroadcastAudience("sections")}
+                        className={`p-3 rounded-2xl border text-left cursor-pointer transition-all ${
+                          broadcastAudience === "sections"
+                            ? "bg-violet-950/80 border-violet-500 text-white shadow-lg shadow-violet-950/50"
+                            : "bg-slate-950/40 border-slate-800 text-slate-400 hover:border-slate-700"
+                        }`}
                       >
-                        Select All
+                        <div className="flex items-center gap-2">
+                          <Layers className="h-4 w-4 text-violet-400" />
+                          <span className="text-xs font-extrabold text-white">Specific Sections</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1">Pick among your created class sections</p>
                       </button>
-                      <span className="text-slate-600">&bull;</span>
+
                       <button
                         type="button"
-                        onClick={handleClearAllSections}
-                        className="text-slate-400 hover:text-white font-bold cursor-pointer"
+                        onClick={() => setBroadcastAudience("students")}
+                        className={`p-3 rounded-2xl border text-left cursor-pointer transition-all ${
+                          broadcastAudience === "students"
+                            ? "bg-emerald-950/80 border-emerald-500 text-white shadow-lg shadow-emerald-950/50"
+                            : "bg-slate-950/40 border-slate-800 text-slate-400 hover:border-slate-700"
+                        }`}
                       >
-                        Clear All
+                        <div className="flex items-center gap-2">
+                          <Users className="h-4 w-4 text-emerald-400" />
+                          <span className="text-xs font-extrabold text-white">All Students</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1">School-wide (including students with 0 classes)</p>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setBroadcastAudience("all")}
+                        className={`p-3 rounded-2xl border text-left cursor-pointer transition-all ${
+                          broadcastAudience === "all"
+                            ? "bg-cyan-950/80 border-cyan-500 text-white shadow-lg shadow-cyan-950/50"
+                            : "bg-slate-950/40 border-slate-800 text-slate-400 hover:border-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Globe className="h-4 w-4 text-cyan-400" />
+                          <span className="text-xs font-extrabold text-white">Everyone</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1">Campus-wide (all students & teachers)</p>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setBroadcastAudience("teachers")}
+                        className={`p-3 rounded-2xl border text-left cursor-pointer transition-all ${
+                          broadcastAudience === "teachers"
+                            ? "bg-amber-950/80 border-amber-500 text-white shadow-lg shadow-amber-950/50"
+                            : "bg-slate-950/40 border-slate-800 text-slate-400 hover:border-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <School className="h-4 w-4 text-amber-400" />
+                          <span className="text-xs font-extrabold text-white">Faculty Only</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1">All teachers and department staff</p>
                       </button>
                     </div>
                   </div>
 
-                  <div className="max-h-60 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                    {teacherClasses.map((section) => {
-                      const isChecked = broadcastSelectedIds.includes(section.id);
-                      const isCurrent = section.id === cls.id;
-                      return (
-                        <label
-                          key={section.id}
-                          className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all cursor-pointer ${
-                            isChecked
-                              ? "bg-violet-950/40 border-violet-500/60 text-white"
-                              : "bg-slate-950/40 border-slate-800 text-slate-300 hover:border-slate-700"
-                          }`}
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={() => handleToggleSection(section.id)}
-                              className="h-4 w-4 rounded accent-violet-500 border-slate-700 bg-slate-900 cursor-pointer"
-                            />
-                            <div className="min-w-0">
-                              <p className="text-xs font-bold truncate flex items-center gap-1.5">
-                                <span>{section.name}</span>
-                                {isCurrent && (
-                                  <span className="px-1.5 py-0.2 rounded text-[10px] bg-slate-800 text-slate-300 border border-slate-700">
-                                    Current
-                                  </span>
-                                )}
-                              </p>
-                              <p className="text-[11px] text-slate-400 truncate">
-                                {section.subject || "General"} &bull; {section.studentIds.length} students enrolled
-                              </p>
-                            </div>
-                          </div>
-                          <span
-                            className={`text-xs font-bold px-2 py-0.5 rounded-lg shrink-0 ${
-                              isChecked ? "bg-violet-500/20 text-violet-300" : "text-slate-500"
-                            }`}
+                  {/* If Audience is Sections, show deliberate checkboxes */}
+                  {broadcastAudience === "sections" ? (
+                    <div className="space-y-3">
+                      <div className="bg-slate-950/70 p-3 rounded-2xl border border-slate-800 flex items-center justify-between text-xs">
+                        <span className="text-slate-300 font-medium">
+                          All sections are unchecked by default for safety.
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleSelectAllSections}
+                            className="text-cyan-400 hover:text-cyan-300 font-bold cursor-pointer"
                           >
-                            {isChecked ? "Selected" : "Omit"}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
+                            Select All
+                          </button>
+                          <span className="text-slate-600">&bull;</span>
+                          <button
+                            type="button"
+                            onClick={handleClearAllSections}
+                            className="text-slate-400 hover:text-white font-bold cursor-pointer"
+                          >
+                            Clear All
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="max-h-56 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                        {teacherClasses.map((section) => {
+                          const isChecked = broadcastSelectedIds.includes(section.id);
+                          const isCurrent = section.id === cls.id;
+                          return (
+                            <label
+                              key={section.id}
+                              className={`flex items-center justify-between p-3 rounded-2xl border transition-all cursor-pointer ${
+                                isChecked
+                                  ? "bg-violet-950/40 border-violet-500/60 text-white"
+                                  : "bg-slate-950/40 border-slate-800 text-slate-300 hover:border-slate-700"
+                              }`}
+                            >
+                              <div className="flex items-center gap-3 min-w-0">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => handleToggleSection(section.id)}
+                                  className="h-4 w-4 rounded accent-violet-500 border-slate-700 bg-slate-900 cursor-pointer"
+                                />
+                                <div className="min-w-0">
+                                  <p className="text-xs font-bold truncate flex items-center gap-1.5">
+                                    <span>{section.name}</span>
+                                    {isCurrent && (
+                                      <span className="px-1.5 py-0.2 rounded text-[10px] bg-slate-800 text-slate-300 border border-slate-700">
+                                        Current
+                                      </span>
+                                    )}
+                                  </p>
+                                  <p className="text-[11px] text-slate-400 truncate">
+                                    {section.subject || "General"} &bull; {section.studentIds.length} students enrolled
+                                  </p>
+                                </div>
+                              </div>
+                              <span
+                                className={`text-xs font-bold px-2 py-0.5 rounded-lg shrink-0 ${
+                                  isChecked ? "bg-violet-500/20 text-violet-300" : "text-slate-500"
+                                }`}
+                              >
+                                {isChecked ? "Selected" : "Omit"}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3">
+                      <div className="flex items-start gap-3">
+                        <Info className="h-5 w-5 text-cyan-400 shrink-0 mt-0.5" />
+                        <div className="space-y-1 text-xs text-slate-300">
+                          <p className="font-bold text-white">
+                            {broadcastAudience === "students" && "School-Wide Broadcast to All Students"}
+                            {broadcastAudience === "all" && "Campus-Wide Broadcast to Everyone"}
+                            {broadcastAudience === "teachers" && "Faculty & Teacher Directory Broadcast"}
+                          </p>
+                          <p className="leading-relaxed">
+                            {broadcastAudience === "students" &&
+                              "Every student in the school will receive this in their Course Announcements tab, even if they haven't enrolled in a class yet."}
+                            {broadcastAudience === "all" &&
+                              "Every student and teacher across the entire campus will receive this announcement in their feeds."}
+                            {broadcastAudience === "teachers" &&
+                              "Every registered teacher will receive this notice in their Faculty announcements."}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Attach Join Code Checkbox */}
+                      <label className="flex items-center gap-3 p-2.5 rounded-xl bg-slate-900 border border-slate-800 cursor-pointer hover:border-slate-700 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={broadcastIncludeClassCode}
+                          onChange={(e) => setBroadcastIncludeClassCode(e.target.checked)}
+                          className="h-4 w-4 rounded accent-teal-500 cursor-pointer"
+                        />
+                        <div className="text-xs">
+                          <span className="font-bold text-white">Attach current section join code: </span>
+                          <code className="px-1.5 py-0.5 bg-slate-800 text-teal-300 rounded font-mono font-bold">
+                            {cls.joinCode}
+                          </code>
+                          <span className="text-slate-400"> ({cls.name})</span>
+                          <p className="text-[10px] text-slate-400 mt-0.5">Students can click 1 button to join this class immediately.</p>
+                        </div>
+                      </label>
+                    </div>
+                  )}
 
                   <div className="flex items-center justify-between pt-2 border-t border-slate-800">
                     <span className="text-xs font-bold text-slate-400">
-                      <strong className="text-white">{broadcastSelectedIds.length}</strong> of {teacherClasses.length} sections selected
+                      {broadcastAudience === "sections" ? (
+                        <>
+                          <strong className="text-white">{broadcastSelectedIds.length}</strong> of {teacherClasses.length} sections selected
+                        </>
+                      ) : (
+                        <span className="text-emerald-400 font-extrabold flex items-center gap-1">
+                          <Check className="h-3.5 w-3.5" /> Ready to review
+                        </span>
+                      )}
                     </span>
 
                     <div className="flex gap-2">
@@ -1237,7 +1394,7 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
                       </button>
                       <button
                         type="button"
-                        disabled={broadcastSelectedIds.length === 0}
+                        disabled={broadcastAudience === "sections" && broadcastSelectedIds.length === 0}
                         onClick={() => setBroadcastStep("confirm")}
                         className="px-5 py-2 text-xs font-extrabold text-white bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl shadow-lg shadow-violet-600/30 cursor-pointer flex items-center gap-1.5"
                       >
@@ -1256,34 +1413,59 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 text-violet-400 font-extrabold text-sm">
                         <Layers className="h-4 w-4 shrink-0" />
-                        <span>Confirm Target Sections</span>
+                        <span>Confirm Target Audience</span>
                       </div>
                       <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-violet-500/15 text-violet-300 border border-violet-500/30">
-                        {broadcastSelectedIds.length} {broadcastSelectedIds.length === 1 ? "section" : "sections"}
+                        {broadcastAudience === "sections"
+                          ? `${broadcastSelectedIds.length} sections`
+                          : broadcastAudience === "students"
+                          ? "All Students"
+                          : broadcastAudience === "teachers"
+                          ? "All Faculty"
+                          : "Campus-Wide"}
                       </span>
                     </div>
-                    <p className="text-slate-300 leading-relaxed text-xs">
-                      This {postType === "assignment" ? "assignment" : "announcement"} will be published to the following course feeds:
-                    </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
-                      {broadcastSelectedIds.map((id) => {
-                        const targetCls = teacherClasses.find((c) => c.id === id);
-                        return (
-                          <div
-                            key={id}
-                            className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80 flex items-center justify-between gap-2"
-                          >
-                            <div className="min-w-0">
-                              <p className="font-bold text-white text-xs truncate">{targetCls?.name || id}</p>
-                              <p className="text-[10px] text-slate-400 truncate">
-                                {targetCls?.subject || "General"} &bull; {targetCls?.studentIds.length || 0} students
-                              </p>
-                            </div>
-                            <Check className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+
+                    {broadcastAudience === "sections" ? (
+                      <>
+                        <p className="text-slate-300 leading-relaxed text-xs">
+                          This {postType === "assignment" ? "assignment" : "announcement"} will be published to the following course feeds:
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
+                          {broadcastSelectedIds.map((id) => {
+                            const targetCls = teacherClasses.find((c) => c.id === id);
+                            return (
+                              <div
+                                key={id}
+                                className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80 flex items-center justify-between gap-2"
+                              >
+                                <div className="min-w-0">
+                                  <p className="font-bold text-white text-xs truncate">{targetCls?.name || id}</p>
+                                  <p className="text-[10px] text-slate-400 truncate">
+                                    {targetCls?.subject || "General"} &bull; {targetCls?.studentIds.length || 0} students
+                                  </p>
+                                </div>
+                                <Check className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="p-3 bg-slate-900 rounded-xl border border-slate-800 space-y-1.5">
+                        <p className="text-white font-bold text-xs">
+                          {broadcastAudience === "students" && "Broadcast will be sent to ALL students across the institution."}
+                          {broadcastAudience === "all" && "Broadcast will be published campus-wide to all students & teachers."}
+                          {broadcastAudience === "teachers" && "Broadcast will be sent to all teachers and faculty members."}
+                        </p>
+                        {broadcastIncludeClassCode && (
+                          <div className="pt-1 flex items-center gap-2 flex-wrap">
+                            <span className="text-slate-300 text-xs font-semibold">Attached Join Code:</span>
+                            <JoinCodePill code={cls.joinCode} className={cls.name} />
                           </div>
-                        );
-                      })}
-                    </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Post Preview */}
@@ -1295,7 +1477,14 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
                       {dueDate && <span>Due: {dueDate}</span>}
                     </div>
                     {title && <p className="font-bold text-white text-sm">{title}</p>}
-                    <p className="text-slate-300 line-clamp-3 leading-relaxed">{content}</p>
+                    <div className="text-slate-300 text-xs leading-relaxed">
+                      {linkifyText(content)}
+                      {broadcastIncludeClassCode && !hasJoinCode(content, cls.joinCode) && (
+                        <div className="mt-2">
+                          <JoinCodePill code={cls.joinCode} className={cls.name} />
+                        </div>
+                      )}
+                    </div>
                     {attachment && (
                       <p className="text-[11px] text-cyan-300 font-semibold pt-1">
                         📎 Attached: {attachment.name}
@@ -1331,7 +1520,15 @@ function ClassLog({ currentUser, cls }: { currentUser: User; cls: ClassRoom }) {
                         ) : (
                           <>
                             <CheckCircle2 className="h-4 w-4" />
-                            <span>Confirm & Publish to {broadcastSelectedIds.length} Sections</span>
+                            <span>
+                              {broadcastAudience === "sections"
+                                ? `Confirm & Publish to ${broadcastSelectedIds.length} Sections`
+                                : broadcastAudience === "students"
+                                ? "Confirm & Publish to All Students"
+                                : broadcastAudience === "teachers"
+                                ? "Confirm & Publish to All Faculty"
+                                : "Confirm & Publish Campus-Wide"}
+                            </span>
                           </>
                         )}
                       </button>
@@ -1504,7 +1701,14 @@ function PostCard({
           </div>
 
           {post.title && <h4 className="text-base font-extrabold text-white">{post.title}</h4>}
-          <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">{linkifyText(post.content)}</p>
+          <div className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">
+            {linkifyText(post.content)}
+            {post.classCode && !hasJoinCode(post.content, post.classCode) && (
+              <div className="mt-2.5">
+                <JoinCodePill code={post.classCode} className={post.className} />
+              </div>
+            )}
+          </div>
 
           {post.dueDate && (
             <p className="text-xs font-bold text-amber-400 flex items-center gap-1 mt-1">

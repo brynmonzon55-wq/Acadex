@@ -755,9 +755,9 @@ export default function ClassMessenger({
                             }`}
                           >
                             {m.content && (
-                              <p className="leading-relaxed whitespace-pre-wrap">
+                              <div className="leading-relaxed whitespace-pre-wrap">
                                 {linkifyText(m.content, { inheritColor: isMe })}
-                              </p>
+                              </div>
                             )}
 
                             {m.attachmentDataUrl && (

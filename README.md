@@ -1,6 +1,14 @@
-# 🌸 Acadex
+# 🌸 VARDES
 
-A classroom and attendance management web app for students and teachers, built with **React + Vite + Firebase**, deployed to GitHub Pages.
+**VARDES** is a unified classroom, faculty, and attendance management web platform for students and teachers, built with **React + Vite + Firebase**.
+
+### 🏛️ The VARDES Acronym
+- **V — Verified**: Unverified accounts until an approved teacher signs off. Role-based access control hardened both client-side and in security rules.
+- **A — Attendance**: 1-Tap roll call, live check-ins, optional session PIN protection, and real-time tardiness calculation.
+- **R — Records**: Comprehensive attendance logs, student performance history, attendance percentages, and exportable CSV reports.
+- **D — Directory**: Faculty directory with teacher profiles, departments, and course rosters.
+- **E — Engagement**: Class messenger, broadcast announcements, direct 1-on-1 messaging, and threaded post comments.
+- **S — Stream**: Class stream for assignments, homework submissions with file attachments, study materials, and teacher grading.
 
 **Live app:** https://brynmonzon55-wq.github.io/Attendance-Hub
 

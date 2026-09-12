@@ -50,7 +50,8 @@ import {
   Check,
   ChevronRight,
   AlertTriangle,
-  Info
+  Info,
+  Globe
 } from "lucide-react";
 import { generateGoogleMeetLink } from "../lib/googleMeet";
 import {
@@ -62,10 +63,11 @@ import {
   ClassPost,
   PostComment,
   AssignmentSubmission,
-  ClassRoom
+  ClassRoom,
+  PostAudience
 } from "../types";
 import type { AppTheme, AppThemeMode } from "../App";
-import { linkifyText } from "../lib/linkify";
+import { linkifyText, hasJoinCode } from "../lib/linkify";
 import { processFileUpload } from "../lib/fileUtils";
 import StudentProfile from "./StudentProfile";
 import TeacherProfile from "./TeacherProfile";
@@ -76,6 +78,7 @@ import UserAvatar from "./UserAvatar";
 import DailyCheckinsTab from "./DailyCheckinsTab";
 import Classroom from "./Classroom";
 import ClassMessenger, { openDirectMessage } from "./ClassMessenger";
+import JoinCodePill from "./JoinCodePill";
 import {
   getUsers,
   saveUser,
@@ -89,6 +92,7 @@ import {
   deleteSecurityLog,
   getAnnouncements,
   getAssignments,
+  isPostVisibleToTeacher,
   createPost,
   createMultiplePosts,
   deletePost,
@@ -212,10 +216,13 @@ export default function TeacherDashboard({
   const [showCreateAnnModal, setShowCreateAnnModal] = useState(false);
   const [annGeneratingMeet, setAnnGeneratingMeet] = useState(false);
   const [annMeetError, setAnnMeetError] = useState("");
+  const [announcementSectionFilter, setAnnouncementSectionFilter] = useState<string>("all_my_classes");
 
   // Multi-section announcement broadcast safety state
   const [showBroadcastAnnModal, setShowBroadcastAnnModal] = useState(false);
   const [broadcastAnnStep, setBroadcastAnnStep] = useState<"select" | "confirm">("select");
+  const [broadcastAudience, setBroadcastAudience] = useState<PostAudience>("sections");
+  const [broadcastAttachCodeClassId, setBroadcastAttachCodeClassId] = useState<string>("");
   const [broadcastAnnSelectedIds, setBroadcastAnnSelectedIds] = useState<string[]>([]);
   const [broadcastAnnPosting, setBroadcastAnnPosting] = useState(false);
   const [broadcastAnnSuccess, setBroadcastAnnSuccess] = useState<string | null>(null);
@@ -298,25 +305,72 @@ export default function TeacherDashboard({
         r.classId === selectedClass.id || sectionStudents.some((s) => s.id.toLowerCase() === r.studentId.toLowerCase())
       );
 
-  const filteredAnnouncements = !selectedClass
-    ? []
-    : announcements
-        .filter((a) => {
-          if (a.authorId.toLowerCase() !== dbUser.id.toLowerCase()) return false;
-          if (!a.classId || a.classId === "all") return true;
-          return a.classId === selectedClass.id;
-        })
-        .sort(comparePostsDesc);
+  const teacherClassIds = teacherClasses.map((c) => c.id);
 
-  const filteredAssignments = !selectedClass
-    ? []
-    : assignments
-        .filter((a) => {
-          if (a.authorId.toLowerCase() !== dbUser.id.toLowerCase()) return false;
-          if (!a.classId || a.classId === "all") return true;
-          return a.classId === selectedClass.id;
-        })
-        .sort(comparePostsDesc);
+  // Helper to check if a post was authored by this teacher under any credential/ID format
+  const isPostAuthoredByMe = (post: ClassPost) => {
+    const pAuthorId = (post.authorId || "").toLowerCase();
+    const pAuthorName = (post.authorName || "").toLowerCase();
+    const uId = (user.id || "").toLowerCase();
+    const dbId = (dbUser?.id || "").toLowerCase();
+    const uEmail = (user.email || "").toLowerCase();
+    const dbEmail = (dbUser?.email || "").toLowerCase();
+    const dbName = (dbUser?.name || "").toLowerCase();
+
+    return (
+      (pAuthorId && (pAuthorId === uId || pAuthorId === dbId || (uEmail && pAuthorId === uEmail) || (dbEmail && pAuthorId === dbEmail))) ||
+      (pAuthorName && dbName && pAuthorName === dbName)
+    );
+  };
+
+  const isPostBroadcast = (post: ClassPost) => {
+    return (
+      post.targetAudience === "all" ||
+      post.targetAudience === "teachers" ||
+      post.targetAudience === "students" ||
+      post.classId === "all" ||
+      post.classId === "all_teachers" ||
+      post.classId === "all_students" ||
+      post.classId === "global"
+    );
+  };
+
+  // Base list of all announcements visible to this teacher
+  const teacherAllAnnouncements = announcements
+    .filter((a) => {
+      return (
+        isPostVisibleToTeacher(a, user.id, teacherClassIds, user.email, dbUser.name) ||
+        isPostAuthoredByMe(a) ||
+        (a.classId && teacherClassIds.includes(a.classId))
+      );
+    })
+    .sort(comparePostsDesc);
+
+  // Announcements filtered according to the active section filter in Course Announcements tab
+  const filteredAnnouncements = teacherAllAnnouncements.filter((a) => {
+    if (announcementSectionFilter === "all_my_classes" || !announcementSectionFilter) {
+      return true;
+    }
+    if (announcementSectionFilter === "broadcasts") {
+      return isPostBroadcast(a);
+    }
+    // Filtered by a specific class section
+    if (a.classId === announcementSectionFilter) return true;
+    // Broadcasts apply school/campus-wide so show them too
+    if (isPostBroadcast(a)) return true;
+    return false;
+  });
+
+  const filteredAssignments = assignments
+    .filter((a) => {
+      const isForMyClass = Boolean(a.classId && teacherClassIds.includes(a.classId));
+      const isAuthoredByMe = isPostAuthoredByMe(a);
+      if (!isForMyClass && !isAuthoredByMe) return false;
+
+      if (!selectedClass) return true;
+      return a.classId === selectedClass.id || !a.classId || a.classId === "all";
+    })
+    .sort(comparePostsDesc);
 
   const handleCreateSection = () => {
     if (!newSectionName.trim()) {
@@ -523,6 +577,8 @@ export default function TeacherDashboard({
   // Multi-section announcement broadcast handlers
   const handleOpenBroadcastAnn = () => {
     // Safety constraint: ALL UNCHECKED by default, no pre-selection
+    setBroadcastAudience("sections");
+    setBroadcastAttachCodeClassId(selectedClass?.id || (teacherClasses[0]?.id ?? ""));
     setBroadcastAnnSelectedIds([]);
     setBroadcastAnnStep("select");
     setShowBroadcastAnnModal(true);
@@ -543,30 +599,63 @@ export default function TeacherDashboard({
   };
 
   const handleConfirmBroadcastAnn = () => {
-    if (broadcastAnnPosting || broadcastAnnSelectedIds.length === 0 || !annContent.trim()) return;
+    if (broadcastAnnPosting || !annContent.trim()) return;
+    if (broadcastAudience === "sections" && broadcastAnnSelectedIds.length === 0) return;
     setBroadcastAnnPosting(true);
 
-    const postsToCreate = broadcastAnnSelectedIds.map((targetClassId) => {
-      const targetClass = teacherClasses.find((c) => c.id === targetClassId);
-      return {
+    if (broadcastAudience === "all" || broadcastAudience === "students" || broadcastAudience === "teachers") {
+      const audienceClassId =
+        broadcastAudience === "students" ? "all_students" : broadcastAudience === "teachers" ? "all_teachers" : "all";
+      const attachedClass = teacherClasses.find((c) => c.id === broadcastAttachCodeClassId);
+
+      createPost({
         type: "announcement" as const,
         authorId: user.id,
         authorName: dbUser.name,
         title: annTitle.trim() || "Announcement",
-        subject: annSubject.trim() || targetClass?.subject || "General",
+        subject: annSubject.trim() || (broadcastAudience === "students" ? "School-Wide" : "Campus-Wide"),
         content: annContent.trim(),
-        classId: targetClassId,
+        classId: audienceClassId,
         attachmentName: annAttachmentName || undefined,
         attachmentDataUrl: annAttachmentDataUrl || undefined,
-      };
-    });
+        targetAudience: broadcastAudience,
+        classCode: attachedClass?.joinCode,
+        className: attachedClass?.name,
+      });
 
-    createMultiplePosts(postsToCreate);
+      setBroadcastAnnSuccess(
+        broadcastAudience === "students"
+          ? attachedClass
+            ? `Broadcast posted to ALL students school-wide with join code ${attachedClass.joinCode}!`
+            : "Broadcast posted to ALL students school-wide!"
+          : broadcastAudience === "teachers"
+          ? "Broadcast posted to ALL faculty & teachers!"
+          : "Campus-Wide broadcast posted to everyone!"
+      );
+    } else {
+      const postsToCreate = broadcastAnnSelectedIds.map((targetClassId) => {
+        const targetClass = teacherClasses.find((c) => c.id === targetClassId);
+        return {
+          type: "announcement" as const,
+          authorId: user.id,
+          authorName: dbUser.name,
+          title: annTitle.trim() || "Announcement",
+          subject: annSubject.trim() || targetClass?.subject || "General",
+          content: annContent.trim(),
+          classId: targetClassId,
+          attachmentName: annAttachmentName || undefined,
+          attachmentDataUrl: annAttachmentDataUrl || undefined,
+          targetAudience: "sections" as const,
+        };
+      });
+
+      createMultiplePosts(postsToCreate);
+      setBroadcastAnnSuccess(`Broadcast posted to ${broadcastAnnSelectedIds.length} class sections.`);
+    }
 
     setBroadcastAnnPosting(false);
     setShowBroadcastAnnModal(false);
-    setBroadcastAnnSuccess(`Broadcast posted to ${broadcastAnnSelectedIds.length} class sections.`);
-    setTimeout(() => setBroadcastAnnSuccess(null), 4000);
+    setTimeout(() => setBroadcastAnnSuccess(null), 5000);
 
     setAnnTitle("");
     setAnnSubject("");
@@ -646,21 +735,43 @@ export default function TeacherDashboard({
   // Post Announcement
   const handleCreateAnnouncement = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!annContent.trim() || !annClassId) return;
+    const effectiveClassId =
+      annClassId ||
+      (announcementSectionFilter && announcementSectionFilter !== "all_my_classes" && announcementSectionFilter !== "broadcasts"
+        ? announcementSectionFilter
+        : null) ||
+      selectedClassId ||
+      teacherClasses[0]?.id;
 
-    const targetClass = teacherClasses.find((c) => c.id === annClassId);
+    if (!annContent.trim() || !effectiveClassId) return;
 
-    createPost({
-      type: "announcement",
-      authorId: user.id,
-      authorName: dbUser.name,
-      title: annTitle.trim() || "Announcement",
-      subject: annSubject.trim() || targetClass?.subject || selectedClass?.subject || "General",
-      content: annContent.trim(),
-      classId: annClassId,
-      attachmentName: annAttachmentName || undefined,
-      attachmentDataUrl: annAttachmentDataUrl || undefined,
-    });
+    if (effectiveClassId === "all_my_sections") {
+      const inputs = teacherClasses.map((cls) => ({
+        type: "announcement" as const,
+        authorId: user.id,
+        authorName: dbUser.name,
+        title: annTitle.trim() || "Announcement",
+        subject: annSubject.trim() || cls.subject || "General",
+        content: annContent.trim(),
+        classId: cls.id,
+        attachmentName: annAttachmentName || undefined,
+        attachmentDataUrl: annAttachmentDataUrl || undefined,
+      }));
+      createMultiplePosts(inputs);
+    } else {
+      const targetClass = teacherClasses.find((c) => c.id === effectiveClassId);
+      createPost({
+        type: "announcement",
+        authorId: user.id,
+        authorName: dbUser.name,
+        title: annTitle.trim() || "Announcement",
+        subject: annSubject.trim() || targetClass?.subject || selectedClass?.subject || "General",
+        content: annContent.trim(),
+        classId: effectiveClassId,
+        attachmentName: annAttachmentName || undefined,
+        attachmentDataUrl: annAttachmentDataUrl || undefined,
+      });
+    }
 
     setAnnTitle("");
     setAnnSubject("");
@@ -959,57 +1070,62 @@ export default function TeacherDashboard({
           </div>
         </motion.div>
 
-        {/* Navigation Tabs - Responsive Grid on Mobile, Flex Row on Desktop */}
-        <div className="bg-cream/80 backdrop-blur-xl p-1.5 rounded-2xl border border-ink-soft/10 shadow-lg grid grid-cols-2 sm:grid-cols-3 md:flex md:items-center md:justify-start gap-1.5 max-w-full">
-          {[
-            { id: "roster", label: "Student Roster", icon: Users, count: sectionStudents.length },
-            {
-              id: "teachers",
-              label: "Teachers",
-              icon: GraduationCap,
-              count: teachers.filter((t) => !t.isApproved).length,
-              badgeColor: "bg-amber-500",
-            },
-            { id: "checkins", label: "Attendance Sheet", icon: UserCheck },
-            { id: "announcements", label: "Announcements", icon: Megaphone, count: filteredAnnouncements.length },
-            { id: "assignments", label: "Assignments & Grading", icon: FileText, count: filteredAssignments.length },
-            { id: "reports", label: "Reports & Logs", icon: FileSpreadsheet },
-            {
-              id: "messenger",
-              label: "Class Messenger",
-              icon: MessageSquare,
-              count: unreadMessengerCount > 0 ? unreadMessengerCount : undefined,
-              badgeColor: "bg-violet-500",
-            },
-            { id: "settings", label: "Settings", icon: SettingsIcon },
-          ].map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`relative flex items-center justify-center md:justify-start gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 py-2 sm:py-2.5 text-xs font-bold rounded-xl transition-colors cursor-pointer w-full md:w-auto ${
-                  isActive ? "text-violet-600" : "text-ink-soft hover:text-ink"
-                }`}
-              >
-                {isActive && (
-                  <motion.div
-                    layoutId="teacherActiveTabPill"
-                    className="absolute inset-0 bg-violet-500/15 border border-violet-500/30 rounded-xl"
-                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
-                  />
-                )}
-                <Icon className="h-4 w-4 relative z-10 shrink-0" />
-                <span className="relative z-10 truncate">{tab.label}</span>
-                {tab.count !== undefined && tab.count > 0 && (
-                  <span className={`relative z-10 px-1.5 py-0.2 text-[10px] font-extrabold ${tab.badgeColor || "bg-violet-500"} text-white rounded-full shrink-0`}>
-                    {tab.count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
+        {/* Navigation Tabs - Responsive Scrollable Flex Row */}
+        <div
+          id="teacher-tabs-nav"
+          className="bg-cream/80 backdrop-blur-xl p-1.5 rounded-2xl border border-ink-soft/10 shadow-lg w-full overflow-x-auto scrollbar-hide"
+        >
+          <div className="flex items-center justify-start gap-1 sm:gap-1.5 min-w-max pr-1 sm:pr-1.5">
+            {[
+              { id: "roster", label: "Student Roster", icon: Users, count: sectionStudents.length },
+              {
+                id: "teachers",
+                label: "Teachers",
+                icon: GraduationCap,
+                count: teachers.filter((t) => !t.isApproved).length,
+                badgeColor: "bg-amber-500",
+              },
+              { id: "checkins", label: "Attendance Sheet", icon: UserCheck },
+              { id: "announcements", label: "Announcements", icon: Megaphone, count: filteredAnnouncements.length },
+              { id: "assignments", label: "Assignments & Grading", icon: FileText, count: filteredAssignments.length },
+              { id: "reports", label: "Reports & Logs", icon: FileSpreadsheet },
+              {
+                id: "messenger",
+                label: "Class Messenger",
+                icon: MessageSquare,
+                count: unreadMessengerCount > 0 ? unreadMessengerCount : undefined,
+                badgeColor: "bg-violet-500",
+              },
+              { id: "settings", label: "Settings", icon: SettingsIcon },
+            ].map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id as any)}
+                  className={`relative flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-xl transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                    isActive ? "text-violet-600 dark:text-violet-300" : "text-ink-soft hover:text-ink"
+                  }`}
+                >
+                  {isActive && (
+                    <motion.div
+                      layoutId="teacherActiveTabPill"
+                      className="absolute inset-0 bg-violet-500/15 border border-violet-500/30 rounded-xl"
+                      transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                    />
+                  )}
+                  <Icon className="h-4 w-4 relative z-10 shrink-0" />
+                  <span className="relative z-10">{tab.label}</span>
+                  {tab.count !== undefined && tab.count > 0 && (
+                    <span className={`relative z-10 px-1.5 py-0.2 text-[10px] font-extrabold ${tab.badgeColor || "bg-violet-500"} text-white rounded-full shrink-0`}>
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* TAB 1: STUDENT ROSTER */}
@@ -1507,12 +1623,17 @@ export default function TeacherDashboard({
             animate={{ opacity: 1, y: 0 }}
             className="space-y-6"
           >
-            <div className="flex justify-between items-center flex-wrap gap-2">
-              <h2 className="text-lg font-black text-ink flex items-center gap-2">
-                <Megaphone className="h-5 w-5 text-violet-500" />
-                Course Announcements
-              </h2>
-              <div className="flex items-center gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-black text-ink flex items-center gap-2">
+                  <Megaphone className="h-5 w-5 text-violet-500" />
+                  Course Announcements
+                </h2>
+                <p className="text-xs text-ink-soft mt-0.5">
+                  View and manage announcements across your class sections and campus broadcasts.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
                 {dbUser.isApproved && teacherClasses.length > 0 && (
                   <button
                     onClick={() => {
@@ -1527,11 +1648,18 @@ export default function TeacherDashboard({
                     <span>Broadcast to All Sections...</span>
                   </button>
                 )}
-                {dbUser.isApproved && selectedClass ? (
+                {dbUser.isApproved && teacherClasses.length > 0 ? (
                   <button
                     onClick={() => {
-                      setAnnClassId(selectedClassId);
-                      if (selectedClass?.subject) setAnnSubject(selectedClass.subject);
+                      const initialClassId =
+                        announcementSectionFilter &&
+                        announcementSectionFilter !== "all_my_classes" &&
+                        announcementSectionFilter !== "broadcasts"
+                          ? announcementSectionFilter
+                          : (selectedClassId || teacherClasses[0]?.id || "");
+                      setAnnClassId(initialClassId);
+                      const targetClass = teacherClasses.find((c) => c.id === initialClassId);
+                      if (targetClass?.subject) setAnnSubject(targetClass.subject);
                       setShowCreateAnnModal(true);
                     }}
                     className="px-4 py-2 text-xs font-extrabold text-white bg-violet-500 hover:bg-violet-600 rounded-xl cursor-pointer shadow-md shadow-violet-500/20 flex items-center gap-2"
@@ -1549,6 +1677,56 @@ export default function TeacherDashboard({
               </div>
             </div>
 
+            {/* Section Filter Pills */}
+            {teacherClasses.length > 0 && (
+              <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide py-1 border-b border-ink-soft/10 pb-3">
+                <span className="text-[11px] font-bold text-ink-soft uppercase tracking-wider shrink-0 flex items-center gap-1">
+                  <Filter className="h-3 w-3 text-violet-400" /> Filter:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setAnnouncementSectionFilter("all_my_classes")}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all shrink-0 cursor-pointer ${
+                    announcementSectionFilter === "all_my_classes"
+                      ? "bg-violet-500 text-white shadow-sm shadow-violet-500/30"
+                      : "bg-cream border border-ink-soft/15 text-ink-soft hover:text-ink hover:bg-ink-soft/5"
+                  }`}
+                >
+                  All Sections ({teacherAllAnnouncements.length})
+                </button>
+                {teacherClasses.map((c) => {
+                  const countForClass = teacherAllAnnouncements.filter(
+                    (a) => a.classId === c.id || isPostBroadcast(a)
+                  ).length;
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => setAnnouncementSectionFilter(c.id)}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all shrink-0 cursor-pointer ${
+                        announcementSectionFilter === c.id
+                          ? "bg-violet-500 text-white shadow-sm shadow-violet-500/30"
+                          : "bg-cream border border-ink-soft/15 text-ink-soft hover:text-ink hover:bg-ink-soft/5"
+                      }`}
+                    >
+                      📚 {c.name} ({countForClass})
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => setAnnouncementSectionFilter("broadcasts")}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all shrink-0 cursor-pointer ${
+                    announcementSectionFilter === "broadcasts"
+                      ? "bg-violet-500 text-white shadow-sm shadow-violet-500/30"
+                      : "bg-cream border border-ink-soft/15 text-ink-soft hover:text-ink hover:bg-ink-soft/5"
+                  }`}
+                >
+                  🌐 Broadcasts Only ({teacherAllAnnouncements.filter((a) => isPostBroadcast(a)).length})
+                </button>
+              </div>
+            )}
+
             {broadcastAnnSuccess && (
               <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-bold rounded-xl flex items-center gap-2">
                 <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
@@ -1557,9 +1735,35 @@ export default function TeacherDashboard({
             )}
 
             {filteredAnnouncements.length === 0 ? (
-              <div className="bg-cream border border-ink-soft/10 rounded-3xl p-12 text-center text-ink-soft/60 space-y-2">
+              <div className="bg-cream border border-ink-soft/10 rounded-3xl p-12 text-center text-ink-soft/60 space-y-3">
                 <Megaphone className="h-10 w-10 mx-auto text-ink-soft/30" />
-                <p className="text-sm font-bold text-ink">No announcements posted for this section yet.</p>
+                <p className="text-sm font-bold text-ink">
+                  {announcementSectionFilter === "all_my_classes"
+                    ? "No announcements found for any of your class sections yet."
+                    : announcementSectionFilter === "broadcasts"
+                    ? "No campus or school-wide broadcasts found."
+                    : `No announcements posted for ${teacherClasses.find((c) => c.id === announcementSectionFilter)?.name || "this section"} yet.`}
+                </p>
+                <p className="text-xs text-ink-soft max-w-md mx-auto">
+                  Post an announcement to notify students about exams, schedules, classroom updates, or lecture materials.
+                </p>
+                {dbUser.isApproved && teacherClasses.length > 0 && (
+                  <button
+                    onClick={() => {
+                      const initialClassId =
+                        announcementSectionFilter &&
+                        announcementSectionFilter !== "all_my_classes" &&
+                        announcementSectionFilter !== "broadcasts"
+                          ? announcementSectionFilter
+                          : (selectedClassId || teacherClasses[0]?.id || "");
+                      setAnnClassId(initialClassId);
+                      setShowCreateAnnModal(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-extrabold text-white bg-violet-500 hover:bg-violet-600 rounded-xl shadow-md transition-all cursor-pointer"
+                  >
+                    <Plus className="h-4 w-4" /> Create First Announcement
+                  </button>
+                )}
               </div>
             ) : (
               <div className="space-y-4">
@@ -1570,11 +1774,23 @@ export default function TeacherDashboard({
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="px-2.5 py-0.5 text-[10px] font-extrabold bg-violet-500/20 text-violet-300 rounded-full border border-violet-500/40">
-                          {!post.classId || post.classId === "all"
-                            ? "🌐 All Sections"
-                            : `📚 ${teacherClasses.find((c) => c.id === post.classId)?.name || "Section"}`}
-                        </span>
+                        {post.targetAudience === "students" || post.classId === "all_students" ? (
+                          <span className="px-2.5 py-0.5 text-[10px] font-extrabold bg-emerald-500/20 text-emerald-300 rounded-full border border-emerald-500/40">
+                            👥 All Students (School-Wide)
+                          </span>
+                        ) : post.targetAudience === "all" || post.classId === "all" ? (
+                          <span className="px-2.5 py-0.5 text-[10px] font-extrabold bg-cyan-500/20 text-cyan-300 rounded-full border border-cyan-500/40">
+                            🌐 Campus-Wide (Everyone)
+                          </span>
+                        ) : post.targetAudience === "teachers" || post.classId === "all_teachers" ? (
+                          <span className="px-2.5 py-0.5 text-[10px] font-extrabold bg-amber-500/20 text-amber-300 rounded-full border border-amber-500/40">
+                            🏫 Faculty & Staff
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-0.5 text-[10px] font-extrabold bg-violet-500/20 text-violet-300 rounded-full border border-violet-500/40">
+                            📚 {teacherClasses.find((c) => c.id === post.classId)?.name || "Section"}
+                          </span>
+                        )}
                         <span className="px-2.5 py-0.5 text-[10px] font-bold bg-slate-800 text-slate-300 rounded-full border border-slate-700">
                           {post.subject || "General"}
                         </span>
@@ -1591,12 +1807,17 @@ export default function TeacherDashboard({
                       </button>
                     </div>
 
-                    <p className="text-xs text-ink/90 font-sans leading-relaxed whitespace-pre-wrap">
+                    <div className="text-xs text-ink/90 font-sans leading-relaxed whitespace-pre-wrap">
                       {linkifyText(post.content, {
                         linkClassName:
                           "font-semibold text-indigo-600 hover:text-indigo-700 underline decoration-indigo-400/50 underline-offset-2 break-all",
                       })}
-                    </p>
+                      {post.classCode && !hasJoinCode(post.content, post.classCode) && (
+                        <div className="mt-2.5">
+                          <JoinCodePill code={post.classCode} className={post.className} />
+                        </div>
+                      )}
+                    </div>
 
                     {post.attachmentDataUrl && (
                       post.attachmentDataUrl.startsWith("data:image/") || /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(post.attachmentName || "") ? (
@@ -1643,7 +1864,16 @@ export default function TeacherDashboard({
                       post={post}
                       currentUser={dbUser}
                       isTeacher={true}
-                      studentsList={sectionStudents}
+                      studentsList={
+                        post.classId && post.classId !== "all"
+                          ? students.filter((s) => {
+                              const cls = teacherClasses.find((c) => c.id === post.classId);
+                              return cls ? cls.studentIds.includes(s.id) : true;
+                            })
+                          : sectionStudents.length > 0
+                          ? sectionStudents
+                          : students
+                      }
                     />
                   </div>
                 ))}
@@ -1943,6 +2173,11 @@ export default function TeacherDashboard({
                           📚 Section: {c.name} {c.subject ? `(${c.subject})` : ""}
                         </option>
                       ))}
+                      {teacherClasses.length > 1 && (
+                        <option value="all_my_sections">
+                          📢 All My Sections ({teacherClasses.length} sections)
+                        </option>
+                      )}
                     </select>
                   </div>
 
@@ -3114,7 +3349,7 @@ export default function TeacherDashboard({
                   </button>
                 </div>
 
-                {/* Safety Step 1: Explicit Section Selection */}
+                {/* Safety Step 1: Explicit Section or Target Audience Selection */}
                 {broadcastAnnStep === "select" && (
                   <div className="space-y-4 text-xs">
                     <div>
@@ -3156,71 +3391,194 @@ export default function TeacherDashboard({
                       />
                     </div>
 
-                    {/* Section Selector: Crucial Safety Constraint: ALL UNCHECKED by default */}
+                    {/* Audience Scope Selector */}
                     <div className="space-y-2 pt-2 border-t border-slate-800">
-                      <div className="flex items-center justify-between">
-                        <label className="text-xs font-bold text-slate-200">
-                          Select Target Sections ({broadcastAnnSelectedIds.length} of {teacherClasses.length} selected)
-                        </label>
-                        <div className="flex items-center gap-2 text-[11px]">
-                          <button
-                            type="button"
-                            onClick={handleSelectAllBroadcastAnn}
-                            className="text-violet-400 hover:text-violet-300 underline font-semibold cursor-pointer"
-                          >
-                            Select All
-                          </button>
-                          <span className="text-slate-600">&bull;</span>
-                          <button
-                            type="button"
-                            onClick={handleClearAllBroadcastAnn}
-                            className="text-slate-400 hover:text-white underline font-semibold cursor-pointer"
-                          >
-                            Clear All
-                          </button>
-                        </div>
-                      </div>
+                      <label className="text-xs font-bold text-slate-200">
+                        Choose Broadcast Audience:
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setBroadcastAudience("sections")}
+                          className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all ${
+                            broadcastAudience === "sections"
+                              ? "bg-violet-950/80 border-violet-500 text-white shadow-md shadow-violet-950/50"
+                              : "bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700"
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <Layers className="h-3.5 w-3.5 text-violet-400" />
+                            <span className="text-xs font-bold text-white">Specific Sections</span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 mt-0.5">Pick from your classes</p>
+                        </button>
 
-                      <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                        {teacherClasses.map((cls) => {
-                          const isChecked = broadcastAnnSelectedIds.includes(cls.id);
-                          return (
-                            <label
-                              key={cls.id}
-                              onClick={() => handleToggleBroadcastAnnSection(cls.id)}
-                              className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer select-none ${
-                                isChecked
-                                  ? "bg-violet-950/60 border-violet-500/50 text-white"
-                                  : "bg-slate-950/60 border-slate-800 text-slate-300 hover:border-slate-700"
-                              }`}
-                            >
-                              <div className="flex items-center gap-2.5 min-w-0">
-                                <div
-                                  className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
-                                    isChecked
-                                      ? "bg-violet-600 border-violet-500 text-white"
-                                      : "border-slate-600 bg-slate-900"
-                                  }`}
-                                >
-                                  {isChecked && <Check className="h-3 w-3" />}
-                                </div>
-                                <div className="truncate">
-                                  <p className="font-bold text-xs truncate">{cls.name}</p>
-                                  <p className="text-[10px] text-slate-400">
-                                    {cls.subject || "General"} &bull; {cls.studentIds.length} students &bull; Code: {cls.joinCode}
-                                  </p>
-                                </div>
-                              </div>
-                            </label>
-                          );
-                        })}
-                      </div>
+                        <button
+                          type="button"
+                          onClick={() => setBroadcastAudience("students")}
+                          className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all ${
+                            broadcastAudience === "students"
+                              ? "bg-emerald-950/80 border-emerald-500 text-white shadow-md shadow-emerald-950/50"
+                              : "bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700"
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <Users className="h-3.5 w-3.5 text-emerald-400" />
+                            <span className="text-xs font-bold text-white">All Students</span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 mt-0.5">Even students with 0 classes</p>
+                        </button>
 
-                      <div className="flex items-center gap-2 text-[11px] text-slate-400 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
-                        <Info className="h-3.5 w-3.5 text-violet-400 shrink-0" />
-                        <span>Select one or more sections. You will review the target list before publishing.</span>
+                        <button
+                          type="button"
+                          onClick={() => setBroadcastAudience("all")}
+                          className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all ${
+                            broadcastAudience === "all"
+                              ? "bg-cyan-950/80 border-cyan-500 text-white shadow-md shadow-cyan-950/50"
+                              : "bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700"
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <Globe className="h-3.5 w-3.5 text-cyan-400" />
+                            <span className="text-xs font-bold text-white">Campus-Wide</span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 mt-0.5">Students + Teachers</p>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setBroadcastAudience("teachers")}
+                          className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all ${
+                            broadcastAudience === "teachers"
+                              ? "bg-amber-950/80 border-amber-500 text-white shadow-md shadow-amber-950/50"
+                              : "bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700"
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <School className="h-3.5 w-3.5 text-amber-400" />
+                            <span className="text-xs font-bold text-white">Faculty Only</span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 mt-0.5">All faculty & teachers</p>
+                        </button>
                       </div>
                     </div>
+
+                    {/* If Audience is Sections, show deliberate checkboxes */}
+                    {broadcastAudience === "sections" ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-bold text-slate-200">
+                            Select Target Sections ({broadcastAnnSelectedIds.length} of {teacherClasses.length} selected)
+                          </label>
+                          <div className="flex items-center gap-2 text-[11px]">
+                            <button
+                              type="button"
+                              onClick={handleSelectAllBroadcastAnn}
+                              className="text-violet-400 hover:text-violet-300 underline font-semibold cursor-pointer"
+                            >
+                              Select All
+                            </button>
+                            <span className="text-slate-600">&bull;</span>
+                            <button
+                              type="button"
+                              onClick={handleClearAllBroadcastAnn}
+                              className="text-slate-400 hover:text-white underline font-semibold cursor-pointer"
+                            >
+                              Clear All
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                          {teacherClasses.map((cls) => {
+                            const isChecked = broadcastAnnSelectedIds.includes(cls.id);
+                            return (
+                              <label
+                                key={cls.id}
+                                onClick={() => handleToggleBroadcastAnnSection(cls.id)}
+                                className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer select-none ${
+                                  isChecked
+                                    ? "bg-violet-950/60 border-violet-500/50 text-white"
+                                    : "bg-slate-950/60 border-slate-800 text-slate-300 hover:border-slate-700"
+                                }`}
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <div
+                                    className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                                      isChecked
+                                        ? "bg-violet-600 border-violet-500 text-white"
+                                        : "border-slate-600 bg-slate-900"
+                                    }`}
+                                  >
+                                    {isChecked && <Check className="h-3 w-3" />}
+                                  </div>
+                                  <div className="truncate">
+                                    <p className="font-bold text-xs truncate">{cls.name}</p>
+                                    <p className="text-[10px] text-slate-400">
+                                      {cls.subject || "General"} &bull; {cls.studentIds.length} students &bull; Code: {cls.joinCode}
+                                    </p>
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+
+                        <div className="flex items-center gap-2 text-[11px] text-slate-400 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
+                          <Info className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+                          <span>Select one or more sections. You will review the target list before publishing.</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-3">
+                        <div className="flex items-start gap-2.5">
+                          <Info className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
+                          <div className="text-slate-300 text-xs leading-relaxed">
+                            {broadcastAudience === "students" && (
+                              <p>
+                                <strong className="text-white">School-Wide Student Broadcast:</strong> Every student will see this announcement, including those who do not belong to any class yet. Perfect for sharing join codes and general notices!
+                              </p>
+                            )}
+                            {broadcastAudience === "all" && (
+                              <p>
+                                <strong className="text-white">Campus-Wide Broadcast:</strong> Published to every student and teacher across all departments and years.
+                              </p>
+                            )}
+                            {broadcastAudience === "teachers" && (
+                              <p>
+                                <strong className="text-white">Faculty-Only Notice:</strong> Sent directly to teachers and staff in the Faculty Directory.
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Attach Class Join Code Dropdown */}
+                        {teacherClasses.length > 0 && broadcastAudience !== "teachers" && (
+                          <div>
+                            <label className="text-[11px] font-bold text-slate-300 block mb-1">
+                              Attach Class Join Code for Instant Enrollment (Optional):
+                            </label>
+                            <select
+                              value={broadcastAttachCodeClassId}
+                              onChange={(e) => setBroadcastAttachCodeClassId(e.target.value)}
+                              className="w-full p-2.5 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white focus:border-teal-400 focus:outline-none"
+                            >
+                              <option value="">Do not attach a join code</option>
+                              {teacherClasses.map((cls) => (
+                                <option key={cls.id} value={cls.id}>
+                                  {cls.name} (Code: {cls.joinCode} - {cls.subject || "General"})
+                                </option>
+                              ))}
+                            </select>
+                            {broadcastAttachCodeClassId && (
+                              <p className="text-[10px] text-teal-300 mt-1">
+                                Students will see an instant "Join Class" button directly on this announcement.
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
                       <button
@@ -3232,7 +3590,10 @@ export default function TeacherDashboard({
                       </button>
                       <button
                         type="button"
-                        disabled={broadcastAnnSelectedIds.length === 0 || !annContent.trim()}
+                        disabled={
+                          !annContent.trim() ||
+                          (broadcastAudience === "sections" && broadcastAnnSelectedIds.length === 0)
+                        }
                         onClick={() => setBroadcastAnnStep("confirm")}
                         className="px-5 py-2 text-xs font-extrabold text-white bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl shadow-lg shadow-violet-600/30 cursor-pointer flex items-center gap-1.5"
                       >
@@ -3250,37 +3611,75 @@ export default function TeacherDashboard({
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2 text-violet-400 font-extrabold text-sm">
                           <Layers className="h-4 w-4 shrink-0" />
-                          <span>Confirm Target Sections</span>
+                          <span>Confirm Target Audience</span>
                         </div>
                         <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-violet-500/15 text-violet-300 border border-violet-500/30">
-                          {broadcastAnnSelectedIds.length} {broadcastAnnSelectedIds.length === 1 ? "section" : "sections"}
+                          {broadcastAudience === "sections"
+                            ? `${broadcastAnnSelectedIds.length} sections`
+                            : broadcastAudience === "students"
+                            ? "All Students"
+                            : broadcastAudience === "teachers"
+                            ? "Faculty Only"
+                            : "Campus-Wide"}
                         </span>
                       </div>
-                      <p className="text-slate-300 text-xs">
-                        Your announcement will be broadcasted to these class feeds:
-                      </p>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
-                        {broadcastAnnSelectedIds.map((id) => {
-                          const cls = teacherClasses.find((c) => c.id === id);
-                          return (
-                            <div key={id} className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80 flex items-center justify-between gap-2">
-                              <div className="min-w-0">
-                                <p className="font-bold text-white text-xs truncate">{cls?.name || id}</p>
-                                <p className="text-[10px] text-slate-400 truncate">
-                                  {cls?.subject || "General"} &bull; {cls?.studentIds.length || 0} students
-                                </p>
-                              </div>
-                              <Check className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+
+                      {broadcastAudience === "sections" ? (
+                        <>
+                          <p className="text-slate-300 text-xs">
+                            Your announcement will be broadcasted to these class feeds:
+                          </p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
+                            {broadcastAnnSelectedIds.map((id) => {
+                              const cls = teacherClasses.find((c) => c.id === id);
+                              return (
+                                <div key={id} className="p-2.5 rounded-xl bg-slate-900 border border-slate-800/80 flex items-center justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="font-bold text-white text-xs truncate">{cls?.name || id}</p>
+                                    <p className="text-[10px] text-slate-400 truncate">
+                                      {cls?.subject || "General"} &bull; {cls?.studentIds.length || 0} students
+                                    </p>
+                                  </div>
+                                  <Check className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="p-3 bg-slate-900/90 rounded-xl border border-slate-800 space-y-1.5">
+                          <p className="text-white font-bold text-xs">
+                            {broadcastAudience === "students" && "📢 Reaching ALL students across the institution (including those with 0 classes)"}
+                            {broadcastAudience === "all" && "🌐 Campus-wide announcement reaching all students and faculty"}
+                            {broadcastAudience === "teachers" && "🏫 Reaching all registered teachers and faculty members"}
+                          </p>
+                          {broadcastAttachCodeClassId && (
+                            <div className="pt-1 flex items-center gap-2 flex-wrap">
+                              <span className="text-slate-300 text-xs font-semibold">Attached Join Code:</span>
+                              <JoinCodePill
+                                code={teacherClasses.find((c) => c.id === broadcastAttachCodeClassId)?.joinCode || ""}
+                                className={teacherClasses.find((c) => c.id === broadcastAttachCodeClassId)?.name}
+                              />
                             </div>
-                          );
-                        })}
-                      </div>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5">
                       <p className="text-[10px] uppercase font-bold text-violet-400 tracking-wider">Announcement Preview</p>
                       <p className="font-bold text-white text-xs">{annTitle.trim() || "Announcement"}</p>
-                      <p className="text-slate-300 line-clamp-3 text-xs leading-relaxed">{annContent}</p>
+                      <div className="text-slate-300 text-xs leading-relaxed">
+                        {linkifyText(annContent)}
+                        {broadcastAttachCodeClassId && !hasJoinCode(annContent, teacherClasses.find((c) => c.id === broadcastAttachCodeClassId)?.joinCode) && (
+                          <div className="mt-2">
+                            <JoinCodePill
+                              code={teacherClasses.find((c) => c.id === broadcastAttachCodeClassId)?.joinCode || ""}
+                              className={teacherClasses.find((c) => c.id === broadcastAttachCodeClassId)?.name}
+                            />
+                          </div>
+                        )}
+                      </div>
                       {annAttachmentName && (
                         <p className="text-[11px] text-cyan-300 font-semibold pt-1">
                           📎 Attached: {annAttachmentName}
@@ -3310,7 +3709,15 @@ export default function TeacherDashboard({
                         ) : (
                           <>
                             <Send className="h-3.5 w-3.5" />
-                            <span>Confirm & Send to {broadcastAnnSelectedIds.length} Sections</span>
+                            <span>
+                              {broadcastAudience === "sections"
+                                ? `Confirm & Send to ${broadcastAnnSelectedIds.length} Sections`
+                                : broadcastAudience === "students"
+                                ? "Confirm & Send to All Students"
+                                : broadcastAudience === "teachers"
+                                ? "Confirm & Send to All Faculty"
+                                : "Confirm & Send Campus-Wide"}
+                            </span>
                           </>
                         )}
                       </button>

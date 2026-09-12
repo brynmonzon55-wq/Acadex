@@ -252,7 +252,7 @@ export default function App() {
   if (checkingSession) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-sm text-cyan-400 font-bold font-display animate-pulse">Loading Acadex...</div>
+        <div className="text-sm text-cyan-400 font-bold font-display animate-pulse">Loading VARDES...</div>
       </div>
     );
   }
@@ -359,12 +359,12 @@ export default function App() {
       <footer className="py-6 border-t border-white/[0.08] text-center text-xs text-slate-400 font-medium font-sans relative z-10 backdrop-blur-md bg-slate-950/40 shrink-0 pb-[calc(18px+env(safe-area-inset-bottom))]">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <span className="font-bold text-white font-display">Acadex</span>
+            <span className="font-bold text-white font-display">VARDES</span>
             <span className="text-slate-500">&bull;</span>
-            <span>Classroom & Attendance Management</span>
+            <span>Verified • Attendance • Records • Directory • Engagement • Stream</span>
           </div>
           <div>
-            &copy; {new Date().getFullYear()} Acadex &bull; Made by Bryn Monzon
+            &copy; {new Date().getFullYear()} VARDES &bull; Made by Bryn Monzon
           </div>
         </div>
       </footer>

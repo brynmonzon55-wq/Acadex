@@ -366,12 +366,12 @@ export default function PostCommentsSection({
                                 </div>
                               </div>
 
-                              <p className="text-ink text-[11px] leading-relaxed break-words font-sans">
+                              <div className="text-ink text-[11px] leading-relaxed break-words font-sans">
                                 {linkifyText(c.content, {
                                   linkClassName:
                                     "font-semibold text-teal-400 hover:text-teal-300 underline underline-offset-2 break-all",
                                 })}
-                              </p>
+                              </div>
                             </div>
                           );
                         })}
@@ -515,12 +515,12 @@ export default function PostCommentsSection({
                                 </div>
                               </div>
 
-                              <p className="text-ink text-[11px] leading-relaxed break-words font-sans">
+                              <div className="text-ink text-[11px] leading-relaxed break-words font-sans">
                                 {linkifyText(c.content, {
                                   linkClassName:
                                     "font-semibold text-fuchsia-400 hover:text-fuchsia-300 underline underline-offset-2 break-all",
                                 })}
-                              </p>
+                              </div>
                             </div>
                           );
                         })}

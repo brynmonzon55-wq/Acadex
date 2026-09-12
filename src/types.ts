@@ -78,10 +78,14 @@ export interface ClassRoom {
 }
 
 export type ClassPostType = "announcement" | "assignment";
+export type PostAudience = "all" | "students" | "teachers" | "sections";
 
 export interface ClassPost {
   id: string;
   classId?: string;
+  targetAudience?: PostAudience; // "all" (entire school), "students" (all students including un-enrolled), "teachers" (all teachers), "sections" (selected sections)
+  classCode?: string; // optional attached join code for students without a class to easily join
+  className?: string; // optional class name reference
   type: ClassPostType;
   authorId: string;
   authorName: string;

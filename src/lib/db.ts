@@ -1,4 +1,4 @@
-import { User, UserRole, AttendanceRecord, AttendanceStatus, StudentStats, SecurityLog, ClassRoom, ClassPost, PostComment, AssignmentSubmission, DirectMessage, MessengerConversation } from "../types";
+import { User, UserRole, AttendanceRecord, AttendanceStatus, StudentStats, SecurityLog, ClassRoom, ClassPost, PostComment, AssignmentSubmission, DirectMessage, MessengerConversation, PostAudience } from "../types";
 import { db, auth, idToAuthEmail, createUserWithoutSigningIn, googleProvider } from "./firebase";
 import { doc, setDoc, deleteDoc, collection, onSnapshot, getDoc, query, where } from "firebase/firestore";
 import {
@@ -1521,8 +1521,95 @@ export function getAssignments(): ClassPost[] {
 
 export function getPostsForClass(classId: string): ClassPost[] {
   return getPosts()
-    .filter((p) => !classId || p.classId === classId || p.classId === "all" || !p.classId)
+    .filter((p) => {
+      if (!classId) return true;
+      if (p.classId === classId) return true;
+      if (
+        p.classId === "all" ||
+        p.classId === "all_students" ||
+        p.classId === "global" ||
+        p.targetAudience === "all" ||
+        p.targetAudience === "students"
+      ) {
+        return true;
+      }
+      return false;
+    })
     .sort(comparePostsDesc);
+}
+
+/**
+ * Determines if an announcement or post is visible to a student.
+ * Crucial rule: Campus-wide and All-Student broadcasts are visible to ANY student,
+ * even if they have 0 classes, so they can see join codes and school announcements!
+ */
+export function isPostVisibleToStudent(post: ClassPost, studentClassIds: string[], teacherIds?: string[]): boolean {
+  // 1. Campus-wide or All-Student broadcast
+  if (
+    post.targetAudience === "all" ||
+    post.targetAudience === "students" ||
+    post.classId === "all" ||
+    post.classId === "all_students" ||
+    post.classId === "global"
+  ) {
+    return true;
+  }
+  // 2. Specific enrolled class section
+  if (post.classId && studentClassIds.includes(post.classId)) {
+    return true;
+  }
+  // 3. Fallback for legacy teacher posts
+  if (teacherIds && post.authorId && teacherIds.includes(post.authorId.toLowerCase()) && !post.classId) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Determines if an announcement or post is visible to a teacher.
+ * Teachers can always see their own posts, campus-wide announcements, all-teacher/student broadcasts,
+ * and any announcements belonging to their classes.
+ */
+export function isPostVisibleToTeacher(
+  post: ClassPost,
+  teacherId: string,
+  teacherClassIds: string[],
+  teacherEmail?: string,
+  teacherName?: string
+): boolean {
+  const pAuthorId = (post.authorId || "").toLowerCase();
+  const pAuthorName = (post.authorName || "").toLowerCase();
+  const tId = (teacherId || "").toLowerCase();
+  const tEmail = (teacherEmail || "").toLowerCase();
+  const tName = (teacherName || "").toLowerCase();
+
+  // 1. Authored by teacher (under user ID, dbUser ID, email, or name)
+  if (
+    (pAuthorId && (pAuthorId === tId || (tEmail && pAuthorId === tEmail))) ||
+    (pAuthorName && tName && pAuthorName === tName)
+  ) {
+    return true;
+  }
+
+  // 2. Broadcasts (Campus-wide, All Students, Faculty)
+  if (
+    post.targetAudience === "all" ||
+    post.targetAudience === "teachers" ||
+    post.targetAudience === "students" ||
+    post.classId === "all" ||
+    post.classId === "all_teachers" ||
+    post.classId === "all_students" ||
+    post.classId === "global"
+  ) {
+    return true;
+  }
+
+  // 3. One of teacher's classes
+  if (post.classId && teacherClassIds.some((cId) => cId.toLowerCase() === (post.classId || "").toLowerCase())) {
+    return true;
+  }
+
+  return false;
 }
 
 export function createPost(input: Omit<ClassPost, "id" | "createdAt">): ClassPost {

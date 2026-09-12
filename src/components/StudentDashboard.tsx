@@ -32,11 +32,16 @@ import {
   MapPin,
   Mail,
   School,
-  Download
+  Download,
+  Users,
+  Globe,
+  Copy,
+  Check,
+  Plus
 } from "lucide-react";
-import { User, AttendanceRecord, AttendanceStatus, StudentStats, ClassPost, PostComment, AssignmentSubmission } from "../types";
+import { User, AttendanceRecord, AttendanceStatus, StudentStats, ClassPost, PostComment, AssignmentSubmission, ClassRoom } from "../types";
 import type { AppTheme, AppThemeMode } from "../App";
-import { linkifyText } from "../lib/linkify";
+import { linkifyText, hasJoinCode } from "../lib/linkify";
 import { processFileUpload } from "../lib/fileUtils";
 import AnimatedThemeBackground from "./AnimatedThemeBackground";
 import SettingsTab from "./SettingsTab";
@@ -47,6 +52,7 @@ import PostCommentsSection from "./PostCommentsSection";
 import DailyCheckinsTab from "./DailyCheckinsTab";
 import Classroom from "./Classroom";
 import ClassMessenger, { openDirectMessage } from "./ClassMessenger";
+import JoinCodePill from "./JoinCodePill";
 import {
   getUsers,
   getAttendanceRecords,
@@ -64,6 +70,8 @@ import {
   submitAssignment,
   getUnreadDirectMessagesCount,
   getClassesForStudent,
+  joinClassByCode,
+  getClasses,
 } from "../lib/db";
 
 interface StudentDashboardProps {
@@ -116,6 +124,10 @@ export default function StudentDashboard({
   // Announcements state
   const [announcements, setAnnouncements] = useState<ClassPost[]>([]);
   const [announcementSearch, setAnnouncementSearch] = useState("");
+  const [enrolledClasses, setEnrolledClasses] = useState<ClassRoom[]>([]);
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [joinSuccessMsg, setJoinSuccessMsg] = useState<string | null>(null);
+  const [joinErrorMsg, setJoinErrorMsg] = useState<string | null>(null);
 
   // Assignments state
   const [assignments, setAssignments] = useState<ClassPost[]>([]);
@@ -191,24 +203,57 @@ export default function StudentDashboard({
     // announcements/assignments/teacher directory. A post is mine to see if
     // it targets one of my actual classes, or it's a no-class/legacy post
     // from one of my actual teachers.
+    // CRITICAL FIX: Campus-wide and All-Students broadcasts are visible to ANY student,
+    // including students with 0 classes, so they can see class join codes and announcements!
+    setEnrolledClasses(myClasses);
     const myTeacherIds = new Set(myClasses.map((c) => c.teacherId.toLowerCase()));
     const myClassIds = new Set(myClasses.map((c) => c.id));
 
-    const isMyPost = (p: ClassPost) => {
+    const isMyAnnouncement = (p: ClassPost) => {
+      // 1. Campus-wide or All-Student broadcasts: any student can see them!
+      if (
+        p.targetAudience === "all" ||
+        p.targetAudience === "students" ||
+        p.classId === "all" ||
+        p.classId === "all_students" ||
+        p.classId === "global"
+      ) {
+        return true;
+      }
+      // 2. Class section specific: student must be enrolled
+      if (p.classId && myClassIds.has(p.classId)) {
+        return true;
+      }
+      // 3. Fallback for teacher's general announcements
       const authorId = (p.authorId || "").toLowerCase();
-      if (!myTeacherIds.has(authorId)) return false;
-      if (!p.classId || p.classId === "all") return true;
-      return myClassIds.has(p.classId);
+      if (myTeacherIds.has(authorId) && (!p.classId || p.classId === "all")) {
+        return true;
+      }
+      return false;
     };
 
-    const ann = getAnnouncements().filter(isMyPost);
+    const isMyAssignment = (p: ClassPost) => {
+      if (p.classId && myClassIds.has(p.classId)) return true;
+      const authorId = (p.authorId || "").toLowerCase();
+      if (myTeacherIds.has(authorId) && !p.classId) return true;
+      return false;
+    };
+
+    const ann = getAnnouncements().filter(isMyAnnouncement);
     setAnnouncements(ann);
 
-    const ass = getAssignments().filter(isMyPost);
+    const ass = getAssignments().filter(isMyAssignment);
     setAssignments(ass);
 
-    // Load Teachers - only the teachers of classes I'm actually in.
-    const teacherUsers = allUsers.filter((u) => u.role === "teacher" && myTeacherIds.has(u.id.toLowerCase()));
+    // Load Teachers - teachers of my classes PLUS teachers who have published school-wide announcements
+    const broadcastTeacherIds = new Set(
+      getAnnouncements()
+        .filter((p) => p.targetAudience === "all" || p.targetAudience === "students" || p.classId === "all" || p.classId === "all_students")
+        .map((p) => (p.authorId || "").toLowerCase())
+    );
+    const teacherUsers = allUsers.filter(
+      (u) => u.role === "teacher" && (myTeacherIds.has(u.id.toLowerCase()) || broadcastTeacherIds.has(u.id.toLowerCase()))
+    );
     const teacherMap = new Map<string, User>();
     teacherUsers.forEach((t) => {
       const key = (t.id || t.uid || "").toLowerCase();
@@ -487,6 +532,29 @@ export default function StudentDashboard({
       }
     : stats;
 
+  const handleQuickJoin = (code: string) => {
+    try {
+      setJoinErrorMsg(null);
+      const joinedCls = joinClassByCode(code, user);
+      setJoinSuccessMsg(`Successfully joined ${joinedCls.name}! Your classes and assignments are now updated.`);
+      setTimeout(() => setJoinSuccessMsg(null), 5000);
+      loadData();
+    } catch (err: any) {
+      if (err.message === "blocked") {
+        setJoinErrorMsg("You are barred from joining this section. Please contact your instructor.");
+      } else {
+        setJoinErrorMsg("Invalid class join code. Please check the code and try again.");
+      }
+      setTimeout(() => setJoinErrorMsg(null), 5000);
+    }
+  };
+
+  const handleCopyCode = (code: string) => {
+    navigator.clipboard.writeText(code);
+    setCopiedCode(code);
+    setTimeout(() => setCopiedCode(null), 2500);
+  };
+
   return (
     <div className="relative min-h-screen pb-16 pt-4 sm:pt-6 px-2.5 sm:px-6 max-w-7xl mx-auto w-full min-w-0 overflow-x-hidden">
       <div className="relative z-10 space-y-4 sm:space-y-6 w-full min-w-0">
@@ -559,158 +627,163 @@ export default function StudentDashboard({
           </div>
         </motion.div>
 
-        {/* Navigation Tabs - Responsive Grid on Mobile, Flex Row on Desktop */}
-        <div className="bg-cream/80 backdrop-blur-xl p-1.5 rounded-2xl border border-ink-soft/10 shadow-lg grid grid-cols-2 sm:flex sm:items-center sm:justify-start gap-1.5 max-w-full">
-          <button
-            onClick={() => setActiveTab("classes")}
-            className={`relative flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 px-3 py-2.5 sm:px-4 text-xs font-bold rounded-xl transition-colors cursor-pointer w-full sm:w-auto ${
-              activeTab === "classes" ? "text-teal-600" : "text-ink-soft hover:text-ink"
-            }`}
-          >
-            {activeTab === "classes" && (
-              <motion.div
-                layoutId="studentActiveTabPill"
-                className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
-                transition={{ type: "spring", stiffness: 400, damping: 30 }}
-              />
-            )}
-            <School className="h-4 w-4 relative z-10 shrink-0" />
-            <span className="relative z-10 truncate">My Classes</span>
-          </button>
+        {/* Navigation Tabs - Responsive Scrollable Flex Row */}
+        <div
+          id="student-tabs-nav"
+          className="bg-cream/80 backdrop-blur-xl p-1.5 rounded-2xl border border-ink-soft/10 shadow-lg w-full overflow-x-auto scrollbar-hide"
+        >
+          <div className="flex items-center justify-start gap-1 sm:gap-1.5 min-w-max pr-1 sm:pr-1.5">
+            <button
+              onClick={() => setActiveTab("classes")}
+              className={`relative flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-xl transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                activeTab === "classes" ? "text-teal-600 dark:text-teal-300" : "text-ink-soft hover:text-ink"
+              }`}
+            >
+              {activeTab === "classes" && (
+                <motion.div
+                  layoutId="studentActiveTabPill"
+                  className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
+                  transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                />
+              )}
+              <School className="h-4 w-4 relative z-10 shrink-0" />
+              <span className="relative z-10">My Classes</span>
+            </button>
 
-          <button
-            onClick={() => setActiveTab("attendance")}
-            className={`relative flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 px-3 py-2.5 sm:px-4 text-xs font-bold rounded-xl transition-colors cursor-pointer w-full sm:w-auto ${
-              activeTab === "attendance" ? "text-teal-600" : "text-ink-soft hover:text-ink"
-            }`}
-          >
-            {activeTab === "attendance" && (
-              <motion.div
-                layoutId="studentActiveTabPill"
-                className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
-                transition={{ type: "spring", stiffness: 400, damping: 30 }}
-              />
-            )}
-            <ClipboardList className="h-4 w-4 relative z-10 shrink-0" />
-            <span className="relative z-10 truncate">Attendance</span>
-          </button>
+            <button
+              onClick={() => setActiveTab("attendance")}
+              className={`relative flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-xl transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                activeTab === "attendance" ? "text-teal-600 dark:text-teal-300" : "text-ink-soft hover:text-ink"
+              }`}
+            >
+              {activeTab === "attendance" && (
+                <motion.div
+                  layoutId="studentActiveTabPill"
+                  className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
+                  transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                />
+              )}
+              <ClipboardList className="h-4 w-4 relative z-10 shrink-0" />
+              <span className="relative z-10">Attendance</span>
+            </button>
 
-          <button
-            onClick={() => setActiveTab("checkins")}
-            className={`relative flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 px-3 py-2.5 sm:px-4 text-xs font-bold rounded-xl transition-colors cursor-pointer w-full sm:w-auto ${
-              activeTab === "checkins" ? "text-teal-600" : "text-ink-soft hover:text-ink"
-            }`}
-          >
-            {activeTab === "checkins" && (
-              <motion.div
-                layoutId="studentActiveTabPill"
-                className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
-                transition={{ type: "spring", stiffness: 400, damping: 30 }}
-              />
-            )}
-            <UserCheck className="h-4 w-4 relative z-10 shrink-0" />
-            <span className="relative z-10 truncate">Attendance Sheet</span>
-          </button>
+            <button
+              onClick={() => setActiveTab("checkins")}
+              className={`relative flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-xl transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                activeTab === "checkins" ? "text-teal-600 dark:text-teal-300" : "text-ink-soft hover:text-ink"
+              }`}
+            >
+              {activeTab === "checkins" && (
+                <motion.div
+                  layoutId="studentActiveTabPill"
+                  className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
+                  transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                />
+              )}
+              <UserCheck className="h-4 w-4 relative z-10 shrink-0" />
+              <span className="relative z-10">Attendance Sheet</span>
+            </button>
 
-          <button
-            onClick={() => setActiveTab("announcements")}
-            className={`relative flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 px-3 py-2.5 sm:px-4 text-xs font-bold rounded-xl transition-colors cursor-pointer w-full sm:w-auto ${
-              activeTab === "announcements" ? "text-teal-600" : "text-ink-soft hover:text-ink"
-            }`}
-          >
-            {activeTab === "announcements" && (
-              <motion.div
-                layoutId="studentActiveTabPill"
-                className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
-                transition={{ type: "spring", stiffness: 400, damping: 30 }}
-              />
-            )}
-            <Megaphone className="h-4 w-4 relative z-10 shrink-0" />
-            <span className="relative z-10 truncate">Announcements</span>
-            {filteredAnnouncements.length > 0 && (
-              <span className="relative z-10 ml-0.5 px-1.5 py-0.2 text-[10px] font-extrabold bg-teal-500 text-white rounded-full shrink-0">
-                {filteredAnnouncements.length}
-              </span>
-            )}
-          </button>
+            <button
+              onClick={() => setActiveTab("announcements")}
+              className={`relative flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-xl transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                activeTab === "announcements" ? "text-teal-600 dark:text-teal-300" : "text-ink-soft hover:text-ink"
+              }`}
+            >
+              {activeTab === "announcements" && (
+                <motion.div
+                  layoutId="studentActiveTabPill"
+                  className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
+                  transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                />
+              )}
+              <Megaphone className="h-4 w-4 relative z-10 shrink-0" />
+              <span className="relative z-10">Announcements</span>
+              {filteredAnnouncements.length > 0 && (
+                <span className="relative z-10 ml-0.5 px-1.5 py-0.2 text-[10px] font-extrabold bg-teal-500 text-white rounded-full shrink-0">
+                  {filteredAnnouncements.length}
+                </span>
+              )}
+            </button>
 
-          <button
-            onClick={() => setActiveTab("assignments")}
-            className={`relative flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 px-3 py-2.5 sm:px-4 text-xs font-bold rounded-xl transition-colors cursor-pointer w-full sm:w-auto ${
-              activeTab === "assignments" ? "text-teal-600" : "text-ink-soft hover:text-ink"
-            }`}
-          >
-            {activeTab === "assignments" && (
-              <motion.div
-                layoutId="studentActiveTabPill"
-                className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
-                transition={{ type: "spring", stiffness: 400, damping: 30 }}
-              />
-            )}
-            <FileText className="h-4 w-4 relative z-10 shrink-0" />
-            <span className="relative z-10 truncate">Assignments</span>
-            {filteredAssignments.length > 0 && (
-              <span className="relative z-10 ml-0.5 px-1.5 py-0.2 text-[10px] font-extrabold bg-teal-500 text-white rounded-full shrink-0">
-                {filteredAssignments.length}
-              </span>
-            )}
-          </button>
+            <button
+              onClick={() => setActiveTab("assignments")}
+              className={`relative flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-xl transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                activeTab === "assignments" ? "text-teal-600 dark:text-teal-300" : "text-ink-soft hover:text-ink"
+              }`}
+            >
+              {activeTab === "assignments" && (
+                <motion.div
+                  layoutId="studentActiveTabPill"
+                  className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
+                  transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                />
+              )}
+              <FileText className="h-4 w-4 relative z-10 shrink-0" />
+              <span className="relative z-10">Assignments</span>
+              {filteredAssignments.length > 0 && (
+                <span className="relative z-10 ml-0.5 px-1.5 py-0.2 text-[10px] font-extrabold bg-teal-500 text-white rounded-full shrink-0">
+                  {filteredAssignments.length}
+                </span>
+              )}
+            </button>
 
-          <button
-            onClick={() => setActiveTab("faculty")}
-            className={`relative flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 px-3 py-2.5 sm:px-4 text-xs font-bold rounded-xl transition-colors cursor-pointer w-full sm:w-auto ${
-              activeTab === "faculty" ? "text-teal-600" : "text-ink-soft hover:text-ink"
-            }`}
-          >
-            {activeTab === "faculty" && (
-              <motion.div
-                layoutId="studentActiveTabPill"
-                className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
-                transition={{ type: "spring", stiffness: 400, damping: 30 }}
-              />
-            )}
-            <GraduationCap className="h-4 w-4 relative z-10 shrink-0" />
-            <span className="relative z-10 truncate">Faculty Directory</span>
-          </button>
+            <button
+              onClick={() => setActiveTab("faculty")}
+              className={`relative flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-xl transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                activeTab === "faculty" ? "text-teal-600 dark:text-teal-300" : "text-ink-soft hover:text-ink"
+              }`}
+            >
+              {activeTab === "faculty" && (
+                <motion.div
+                  layoutId="studentActiveTabPill"
+                  className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
+                  transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                />
+              )}
+              <GraduationCap className="h-4 w-4 relative z-10 shrink-0" />
+              <span className="relative z-10">Faculty Directory</span>
+            </button>
 
-          <button
-            onClick={() => setActiveTab("messenger")}
-            className={`relative flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 px-3 py-2.5 sm:px-4 text-xs font-bold rounded-xl transition-colors cursor-pointer w-full sm:w-auto ${
-              activeTab === "messenger" ? "text-violet-600 dark:text-violet-400" : "text-ink-soft hover:text-ink"
-            }`}
-          >
-            {activeTab === "messenger" && (
-              <motion.div
-                layoutId="studentActiveTabPill"
-                className="absolute inset-0 bg-violet-500/15 border border-violet-500/30 rounded-xl"
-                transition={{ type: "spring", stiffness: 400, damping: 30 }}
-              />
-            )}
-            <MessageSquare className="h-4 w-4 relative z-10 shrink-0" />
-            <span className="relative z-10 truncate">Class Messenger</span>
-            {unreadMessengerCount > 0 && (
-              <span className="relative z-10 ml-0.5 px-1.5 py-0.2 text-[10px] font-extrabold bg-violet-500 text-white rounded-full shrink-0 animate-pulse">
-                {unreadMessengerCount}
-              </span>
-            )}
-          </button>
+            <button
+              onClick={() => setActiveTab("messenger")}
+              className={`relative flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-xl transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                activeTab === "messenger" ? "text-violet-600 dark:text-violet-400" : "text-ink-soft hover:text-ink"
+              }`}
+            >
+              {activeTab === "messenger" && (
+                <motion.div
+                  layoutId="studentActiveTabPill"
+                  className="absolute inset-0 bg-violet-500/15 border border-violet-500/30 rounded-xl"
+                  transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                />
+              )}
+              <MessageSquare className="h-4 w-4 relative z-10 shrink-0" />
+              <span className="relative z-10">Class Messenger</span>
+              {unreadMessengerCount > 0 && (
+                <span className="relative z-10 ml-0.5 px-1.5 py-0.2 text-[10px] font-extrabold bg-violet-500 text-white rounded-full shrink-0 animate-pulse">
+                  {unreadMessengerCount}
+                </span>
+              )}
+            </button>
 
-          <button
-            onClick={() => setActiveTab("settings")}
-            className={`relative flex items-center justify-center sm:justify-start gap-1.5 sm:gap-2 px-3 py-2.5 sm:px-4 text-xs font-bold rounded-xl transition-colors cursor-pointer w-full sm:w-auto ${
-              activeTab === "settings" ? "text-teal-600" : "text-ink-soft hover:text-ink"
-            }`}
-          >
-            {activeTab === "settings" && (
-              <motion.div
-                layoutId="studentActiveTabPill"
-                className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
-                transition={{ type: "spring", stiffness: 400, damping: 30 }}
-              />
-            )}
-            <SettingsIcon className="h-4 w-4 relative z-10 shrink-0" />
-            <span className="relative z-10 truncate">Settings</span>
-          </button>
+            <button
+              onClick={() => setActiveTab("settings")}
+              className={`relative flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-xl transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                activeTab === "settings" ? "text-teal-600 dark:text-teal-300" : "text-ink-soft hover:text-ink"
+              }`}
+            >
+              {activeTab === "settings" && (
+                <motion.div
+                  layoutId="studentActiveTabPill"
+                  className="absolute inset-0 bg-teal-500/15 border border-teal-500/30 rounded-xl"
+                  transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                />
+              )}
+              <SettingsIcon className="h-4 w-4 relative z-10 shrink-0" />
+              <span className="relative z-10">Settings</span>
+            </button>
+          </div>
         </div>
 
         {/* Teacher / Class Selector Bar */}
@@ -1044,6 +1117,45 @@ export default function StudentDashboard({
             animate={{ opacity: 1, y: 0 }}
             className="space-y-6"
           >
+            {/* 0-Class Enrollment Helper Banner */}
+            {enrolledClasses.length === 0 && (
+              <div className="bg-teal-950/40 border border-teal-500/30 rounded-3xl p-5 shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-teal-500/20 text-teal-400 flex items-center justify-center shrink-0 border border-teal-500/30">
+                    <School className="h-5 w-5" />
+                  </div>
+                  <div className="space-y-0.5">
+                    <h3 className="text-sm font-bold text-white">Not yet enrolled in a class section?</h3>
+                    <p className="text-xs text-slate-300 max-w-xl">
+                      You can view all school-wide broadcasts below. Teachers post their course announcements and class join codes here so you can enroll.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveTab("classes")}
+                  className="px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-extrabold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer shrink-0"
+                >
+                  <School className="h-4 w-4" />
+                  <span>Join Class in My Classes</span>
+                </button>
+              </div>
+            )}
+
+            {/* Notification messages */}
+            {joinSuccessMsg && (
+              <div className="p-3 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold rounded-2xl flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                <span>{joinSuccessMsg}</span>
+              </div>
+            )}
+
+            {joinErrorMsg && (
+              <div className="p-3 bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-bold rounded-2xl flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
+                <span>{joinErrorMsg}</span>
+              </div>
+            )}
+
             {/* Search Bar */}
             <div className="bg-cream border border-ink-soft/10 rounded-2xl p-4 shadow-lg flex items-center gap-3">
               <Search className="h-5 w-5 text-teal-500 shrink-0" />
@@ -1051,7 +1163,7 @@ export default function StudentDashboard({
                 type="text"
                 value={announcementSearch}
                 onChange={(e) => setAnnouncementSearch(e.target.value)}
-                placeholder="Search announcements by title or content..."
+                placeholder="Search announcements by title, content, or join code..."
                 className="w-full text-xs font-semibold bg-transparent !border-none !outline-none focus:!bg-transparent focus:!outline-none focus:!border-none focus:!ring-0 text-ink placeholder-ink-soft/50"
                 style={{ border: "none", outline: "none", boxShadow: "none" }}
               />
@@ -1065,101 +1177,131 @@ export default function StudentDashboard({
               </div>
             ) : (
               <div className="space-y-4">
-                {filteredAnnouncements.map((post, idx) => (
-                  <motion.div
-                    key={post.id}
-                    initial={{ opacity: 0, y: 15 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: idx * 0.05 }}
-                    className="bg-cream border border-ink-soft/10 rounded-3xl p-6 shadow-xl space-y-4"
-                  >
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-ink-soft/10 pb-4">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="px-2.5 py-0.5 text-[10px] font-extrabold bg-teal-950/80 text-teal-300 rounded-full border border-teal-500/40">
-                            Announcement
-                          </span>
-                          <span className="px-2.5 py-0.5 text-[10px] font-extrabold bg-indigo-950/80 text-indigo-300 rounded-full border border-indigo-500/40 flex items-center gap-1">
-                            <GraduationCap className="h-3 w-3" />
-                            Teacher: {post.authorName || teachers.find((t) => t.id === post.authorId)?.name || "Faculty"}
-                          </span>
-                          {post.subject && (
-                            <span className="px-2.5 py-0.5 text-[10px] font-bold bg-violet-950/80 text-violet-300 rounded-full border border-violet-500/40">
-                              {post.subject}
+                {filteredAnnouncements.map((post, idx) => {
+                  const isSchoolWide = post.targetAudience === "all" || post.classId === "all";
+                  const isAllStudents = post.targetAudience === "students" || post.classId === "all_students";
+                  const isEnrolled = post.classId ? enrolledClasses.some((c) => c.id === post.classId) : false;
+
+                  return (
+                    <motion.div
+                      key={post.id}
+                      initial={{ opacity: 0, y: 15 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: idx * 0.05 }}
+                      className="bg-cream border border-ink-soft/10 rounded-3xl p-6 shadow-xl space-y-4"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-ink-soft/10 pb-4">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {isAllStudents ? (
+                              <span className="px-2.5 py-0.5 text-[10px] font-extrabold bg-emerald-950/80 text-emerald-300 rounded-full border border-emerald-500/40 flex items-center gap-1">
+                                <Users className="h-3 w-3" />
+                                Broadcast: All Students
+                              </span>
+                            ) : isSchoolWide ? (
+                              <span className="px-2.5 py-0.5 text-[10px] font-extrabold bg-violet-950/80 text-violet-300 rounded-full border border-violet-500/40 flex items-center gap-1">
+                                <Globe className="h-3 w-3" />
+                                Campus-Wide Broadcast
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-0.5 text-[10px] font-extrabold bg-teal-950/80 text-teal-300 rounded-full border border-teal-500/40">
+                                Announcement
+                              </span>
+                            )}
+                            <span className="px-2.5 py-0.5 text-[10px] font-extrabold bg-indigo-950/80 text-indigo-300 rounded-full border border-indigo-500/40 flex items-center gap-1">
+                              <GraduationCap className="h-3 w-3" />
+                              Teacher: {post.authorName || teachers.find((t) => t.id === post.authorId)?.name || "Faculty"}
                             </span>
-                          )}
+                            {post.subject && (
+                              <span className="px-2.5 py-0.5 text-[10px] font-bold bg-violet-950/80 text-violet-300 rounded-full border border-violet-500/40">
+                                {post.subject}
+                              </span>
+                            )}
+                          </div>
+                          <h2 className="text-lg font-black text-ink tracking-tight mt-1">
+                            {post.title || "Course Announcement"}
+                          </h2>
                         </div>
-                        <h2 className="text-lg font-black text-ink tracking-tight mt-1">
-                          {post.title || "Course Announcement"}
-                        </h2>
+                        <span className="text-xs font-mono text-ink-soft/60">
+                          {new Date(post.createdAt).toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
                       </div>
-                      <span className="text-xs font-mono text-ink-soft/60">
-                        {new Date(post.createdAt).toLocaleDateString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
+
+                      <div className="text-xs leading-relaxed text-ink/90 whitespace-pre-wrap font-sans">
+                        {linkifyText(post.content, {
+                          linkClassName:
+                            "font-semibold text-indigo-600 hover:text-indigo-700 underline decoration-indigo-400/50 underline-offset-2 break-all",
+                          onJoinCode: handleQuickJoin,
+                          isEnrolled: () => isEnrolled,
                         })}
-                      </span>
-                    </div>
+                        {post.classCode && !hasJoinCode(post.content, post.classCode) && (
+                          <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+                            <JoinCodePill
+                              code={post.classCode}
+                              className={post.className}
+                              onJoin={handleQuickJoin}
+                              isEnrolled={isEnrolled}
+                            />
+                          </div>
+                        )}
+                      </div>
 
-                    <p className="text-xs leading-relaxed text-ink/90 whitespace-pre-wrap font-sans">
-                      {linkifyText(post.content, {
-                        linkClassName:
-                          "font-semibold text-indigo-600 hover:text-indigo-700 underline decoration-indigo-400/50 underline-offset-2 break-all",
-                      })}
-                    </p>
-
-                    {/* Attachment preview if any */}
-                    {post.attachmentDataUrl && (
-                      post.attachmentDataUrl.startsWith("data:image/") || /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(post.attachmentName || "") ? (
-                        <div className="mt-3 overflow-hidden rounded-2xl border border-ink-soft/15 bg-slate-950/40 max-w-lg">
-                          <img
-                            src={post.attachmentDataUrl}
-                            alt={post.attachmentName || "Attached photo"}
-                            className="max-h-72 w-full object-cover rounded-t-2xl hover:opacity-95 transition-opacity cursor-pointer"
-                            onClick={() => window.open(post.attachmentDataUrl, "_blank")}
-                          />
-                          <div className="p-3 bg-slate-900/90 border-t border-ink-soft/15 flex items-center justify-between text-xs font-bold text-ink">
-                            <span className="flex items-center gap-1.5 truncate">
-                              <ImageIcon className="h-4 w-4 text-teal-400 shrink-0" />
-                              <span className="truncate">{post.attachmentName || "Attached Photo"}</span>
-                            </span>
+                      {/* Attachment preview if any */}
+                      {post.attachmentDataUrl && (
+                        post.attachmentDataUrl.startsWith("data:image/") || /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(post.attachmentName || "") ? (
+                          <div className="mt-3 overflow-hidden rounded-2xl border border-ink-soft/15 bg-slate-950/40 max-w-lg">
+                            <img
+                              src={post.attachmentDataUrl}
+                              alt={post.attachmentName || "Attached photo"}
+                              className="max-h-72 w-full object-cover rounded-t-2xl hover:opacity-95 transition-opacity cursor-pointer"
+                              onClick={() => window.open(post.attachmentDataUrl, "_blank")}
+                            />
+                            <div className="p-3 bg-slate-900/90 border-t border-ink-soft/15 flex items-center justify-between text-xs font-bold text-ink">
+                              <span className="flex items-center gap-1.5 truncate">
+                                <ImageIcon className="h-4 w-4 text-teal-400 shrink-0" />
+                                <span className="truncate">{post.attachmentName || "Attached Photo"}</span>
+                              </span>
+                              <a
+                                href={post.attachmentDataUrl}
+                                download={post.attachmentName || "photo.png"}
+                                className="px-3 py-1.5 text-xs font-bold text-teal-300 bg-teal-500/20 border border-teal-500/40 hover:bg-teal-500/30 rounded-xl transition-all cursor-pointer"
+                              >
+                                Download Photo
+                              </a>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-3 bg-slate-950/40 border border-ink-soft/15 rounded-2xl flex items-center justify-between">
+                            <div className="flex items-center gap-2 text-xs font-bold text-ink truncate">
+                              <Paperclip className="h-4 w-4 text-teal-400 shrink-0" />
+                              <span className="truncate">{post.attachmentName || "Attachment"}</span>
+                            </div>
                             <a
                               href={post.attachmentDataUrl}
-                              download={post.attachmentName || "photo.png"}
-                              className="px-3 py-1.5 text-xs font-bold text-teal-300 bg-teal-500/20 border border-teal-500/40 hover:bg-teal-500/30 rounded-xl transition-all cursor-pointer"
+                              download={post.attachmentName || "attachment"}
+                              className="px-3.5 py-1.5 text-xs font-bold text-teal-300 bg-teal-500/20 border border-teal-500/40 rounded-xl hover:bg-teal-500/30 transition-all cursor-pointer shrink-0"
                             >
-                              Download Photo
+                              Download
                             </a>
                           </div>
-                        </div>
-                      ) : (
-                        <div className="p-3 bg-slate-950/40 border border-ink-soft/15 rounded-2xl flex items-center justify-between">
-                          <div className="flex items-center gap-2 text-xs font-bold text-ink truncate">
-                            <Paperclip className="h-4 w-4 text-teal-400 shrink-0" />
-                            <span className="truncate">{post.attachmentName || "Attachment"}</span>
-                          </div>
-                          <a
-                            href={post.attachmentDataUrl}
-                            download={post.attachmentName || "attachment"}
-                            className="px-3.5 py-1.5 text-xs font-bold text-teal-300 bg-teal-500/20 border border-teal-500/40 rounded-xl hover:bg-teal-500/30 transition-all cursor-pointer shrink-0"
-                          >
-                            Download
-                          </a>
-                        </div>
-                      )
-                    )}
+                        )
+                      )}
 
-                    {/* Class & Private Comments Section */}
-                    <PostCommentsSection
-                      post={post}
-                      currentUser={dbUser}
-                      isTeacher={false}
-                    />
-                  </motion.div>
-                ))}
+                      {/* Class & Private Comments Section */}
+                      <PostCommentsSection
+                        post={post}
+                        currentUser={dbUser}
+                        isTeacher={false}
+                      />
+                    </motion.div>
+                  );
+                })}
               </div>
             )}
           </motion.div>

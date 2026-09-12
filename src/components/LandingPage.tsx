@@ -9,6 +9,8 @@ import {
   BarChart3,
   Bell,
   Shield,
+  ShieldCheck,
+  MessageSquare,
   Play,
   RotateCcw,
   School,
@@ -484,7 +486,7 @@ export default function LandingPage({
             Choose Your Portal
           </span>
           <h2 className="text-3xl sm:text-4xl font-bold font-display text-white">
-            Pick how you're using Acadex today.
+            Pick how you're using VARDES today.
           </h2>
         </div>
 
@@ -875,82 +877,121 @@ export default function LandingPage({
       </section>
 
       {/* ========================================================================= */}
-      {/* 4. COMPREHENSIVE 6-PILLAR FEATURES MATRIX */}
+      {/* 4. COMPREHENSIVE 6-PILLAR FEATURES MATRIX — VARDES */}
       {/* ========================================================================= */}
       <section className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 border-t border-white/10" id="features">
         <div className="text-center max-w-3xl mx-auto space-y-3 mb-12">
+          <span className={`text-xs font-semibold font-mono uppercase tracking-widest ${tStyles.sectionTag}`}>
+            The Architecture of VARDES
+          </span>
           <h2 className="text-2xl sm:text-3xl font-extrabold font-display text-white">
-            Everything you need in one school platform
+            Six pillars built for trusted modern education
           </h2>
           <p className="text-slate-300 text-xs sm:text-sm">
-            Unified classroom management and attendance tracking without switching between disconnected apps.
+            Every feature in VARDES is purpose-built to empower educators, verify students, and streamline classroom operations.
           </p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {/* Feature 1 */}
-          <div className="p-6 rounded-2xl bg-slate-900/40 border border-white/[0.08] hover:border-cyan-400/40 hover:shadow-[0_0_20px_rgba(0,240,255,0.2)] transition-all text-left space-y-3 backdrop-blur-md">
-            <div className="w-11 h-11 rounded-xl bg-cyan-500/20 border border-cyan-400/30 flex items-center justify-center text-cyan-400 shadow-[0_0_10px_rgba(0,240,255,0.25)]">
-              <School className="w-5 h-5" />
+          {/* Pillar V: Verified */}
+          <div className="p-6 rounded-2xl bg-slate-900/40 border border-white/[0.08] hover:border-cyan-400/40 hover:shadow-[0_0_20px_rgba(0,240,255,0.2)] transition-all text-left space-y-3 backdrop-blur-md relative overflow-hidden group">
+            <div className="flex items-center justify-between">
+              <div className="w-11 h-11 rounded-xl bg-cyan-500/20 border border-cyan-400/30 flex items-center justify-center text-cyan-400 shadow-[0_0_10px_rgba(0,240,255,0.25)]">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <span className="text-2xl font-black font-display text-cyan-400/40 group-hover:text-cyan-400 transition-colors">V</span>
             </div>
-            <h3 className="text-base font-bold text-white">Google Classroom-style Hubs</h3>
+            <div>
+              <div className="text-[11px] font-mono text-cyan-400 font-bold uppercase tracking-wider">Pillar V</div>
+              <h3 className="text-base font-bold text-white">Verified Accounts</h3>
+            </div>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Create subject-specific classrooms with custom banners, join codes (e.g. CS-882X), and organized period rosters.
+              Unverified accounts remain locked until an approved teacher signs off. Hardened security rules protect classes, rosters, and grades from unauthorized access.
             </p>
           </div>
 
-          {/* Feature 2 */}
-          <div className="p-6 rounded-2xl bg-slate-900/40 border border-white/[0.08] hover:border-violet-400/40 hover:shadow-[0_0_20px_rgba(167,139,250,0.2)] transition-all text-left space-y-3 backdrop-blur-md">
-            <div className="w-11 h-11 rounded-xl bg-violet-500/20 border border-violet-400/30 flex items-center justify-center text-violet-400 shadow-[0_0_10px_rgba(167,139,250,0.25)]">
-              <FileText className="w-5 h-5" />
+          {/* Pillar A: Attendance */}
+          <div className="p-6 rounded-2xl bg-slate-900/40 border border-white/[0.08] hover:border-emerald-400/40 hover:shadow-[0_0_20px_rgba(52,211,153,0.2)] transition-all text-left space-y-3 backdrop-blur-md relative overflow-hidden group">
+            <div className="flex items-center justify-between">
+              <div className="w-11 h-11 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.25)]">
+                <CheckCircle2 className="w-5 h-5" />
+              </div>
+              <span className="text-2xl font-black font-display text-emerald-400/40 group-hover:text-emerald-400 transition-colors">A</span>
             </div>
-            <h3 className="text-base font-bold text-white">Coursework & Submissions</h3>
+            <div>
+              <div className="text-[11px] font-mono text-emerald-400 font-bold uppercase tracking-wider">Pillar A</div>
+              <h3 className="text-base font-bold text-white">Attendance Tracking</h3>
+            </div>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Post homework with deadlines and rubrics. Students submit documents with file upload and live turn-in tracking.
+              1-Tap roll call with instant Present, Late, and Absent markers, optional session PIN protection, and automated real-time tardy calculations.
             </p>
           </div>
 
-          {/* Feature 3 */}
-          <div className="p-6 rounded-2xl bg-slate-900/40 border border-white/[0.08] hover:border-pink-400/40 hover:shadow-[0_0_20px_rgba(244,114,182,0.2)] transition-all text-left space-y-3 backdrop-blur-md">
-            <div className="w-11 h-11 rounded-xl bg-pink-500/20 border border-pink-400/30 flex items-center justify-center text-pink-400 shadow-[0_0_10px_rgba(244,114,182,0.25)]">
-              <Megaphone className="w-5 h-5" />
+          {/* Pillar R: Records */}
+          <div className="p-6 rounded-2xl bg-slate-900/40 border border-white/[0.08] hover:border-sky-400/40 hover:shadow-[0_0_20px_rgba(56,189,248,0.2)] transition-all text-left space-y-3 backdrop-blur-md relative overflow-hidden group">
+            <div className="flex items-center justify-between">
+              <div className="w-11 h-11 rounded-xl bg-sky-500/20 border border-sky-400/30 flex items-center justify-center text-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.25)]">
+                <BarChart3 className="w-5 h-5" />
+              </div>
+              <span className="text-2xl font-black font-display text-sky-400/40 group-hover:text-sky-400 transition-colors">R</span>
             </div>
-            <h3 className="text-base font-bold text-white">Interactive Class Stream</h3>
+            <div>
+              <div className="text-[11px] font-mono text-sky-400 font-bold uppercase tracking-wider">Pillar R</div>
+              <h3 className="text-base font-bold text-white">Records & Analytics</h3>
+            </div>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Broadcast announcements, share slide decks, and enable threaded discussions between students and educators.
+              Permanent attendance logs, historical student trends, at-risk percentage alerts, and one-click exportable CSV reports for administration.
             </p>
           </div>
 
-          {/* Feature 4 */}
-          <div className="p-6 rounded-2xl bg-slate-900/40 border border-white/[0.08] hover:border-emerald-400/40 hover:shadow-[0_0_20px_rgba(52,211,153,0.2)] transition-all text-left space-y-3 backdrop-blur-md">
-            <div className="w-11 h-11 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.25)]">
-              <CheckCircle2 className="w-5 h-5" />
+          {/* Pillar D: Directory */}
+          <div className="p-6 rounded-2xl bg-slate-900/40 border border-white/[0.08] hover:border-amber-400/40 hover:shadow-[0_0_20px_rgba(251,191,36,0.2)] transition-all text-left space-y-3 backdrop-blur-md relative overflow-hidden group">
+            <div className="flex items-center justify-between">
+              <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-400/30 flex items-center justify-center text-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.25)]">
+                <Users className="w-5 h-5" />
+              </div>
+              <span className="text-2xl font-black font-display text-amber-400/40 group-hover:text-amber-400 transition-colors">D</span>
             </div>
-            <h3 className="text-base font-bold text-white">1-Tap Live Roll Call</h3>
+            <div>
+              <div className="text-[11px] font-mono text-amber-400 font-bold uppercase tracking-wider">Pillar D</div>
+              <h3 className="text-base font-bold text-white">Faculty Directory</h3>
+            </div>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Students check in instantly from mobile or desktop with optional session PINs and automatic tardy calculation.
+              Comprehensive directory of teachers and faculty profiles tied to enrolled classes, allowing quick access to departments, bios, and office hours.
             </p>
           </div>
 
-          {/* Feature 5 */}
-          <div className="p-6 rounded-2xl bg-slate-900/40 border border-white/[0.08] hover:border-amber-400/40 hover:shadow-[0_0_20px_rgba(251,191,36,0.2)] transition-all text-left space-y-3 backdrop-blur-md">
-            <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-400/30 flex items-center justify-center text-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.25)]">
-              <BookOpen className="w-5 h-5" />
+          {/* Pillar E: Engagement */}
+          <div className="p-6 rounded-2xl bg-slate-900/40 border border-white/[0.08] hover:border-pink-400/40 hover:shadow-[0_0_20px_rgba(244,114,182,0.2)] transition-all text-left space-y-3 backdrop-blur-md relative overflow-hidden group">
+            <div className="flex items-center justify-between">
+              <div className="w-11 h-11 rounded-xl bg-pink-500/20 border border-pink-400/30 flex items-center justify-center text-pink-400 shadow-[0_0_10px_rgba(244,114,182,0.25)]">
+                <MessageSquare className="w-5 h-5" />
+              </div>
+              <span className="text-2xl font-black font-display text-pink-400/40 group-hover:text-pink-400 transition-colors">E</span>
             </div>
-            <h3 className="text-base font-bold text-white">Study Materials Hub</h3>
+            <div>
+              <div className="text-[11px] font-mono text-pink-400 font-bold uppercase tracking-wider">Pillar E</div>
+              <h3 className="text-base font-bold text-white">Engagement & Messenger</h3>
+            </div>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Centralized repository for lecture slides, reading PDFs, and reference links organized clearly by course unit.
+              Real-time 1-on-1 Class Messenger, announcements, unread notifications, file sharing, and threaded post discussions between educators and students.
             </p>
           </div>
 
-          {/* Feature 6 */}
-          <div className="p-6 rounded-2xl bg-slate-900/40 border border-white/[0.08] hover:border-sky-400/40 hover:shadow-[0_0_20px_rgba(56,189,248,0.2)] transition-all text-left space-y-3 backdrop-blur-md">
-            <div className="w-11 h-11 rounded-xl bg-sky-500/20 border border-sky-400/30 flex items-center justify-center text-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.25)]">
-              <BarChart3 className="w-5 h-5" />
+          {/* Pillar S: Stream */}
+          <div className="p-6 rounded-2xl bg-slate-900/40 border border-white/[0.08] hover:border-violet-400/40 hover:shadow-[0_0_20px_rgba(167,139,250,0.2)] transition-all text-left space-y-3 backdrop-blur-md relative overflow-hidden group">
+            <div className="flex items-center justify-between">
+              <div className="w-11 h-11 rounded-xl bg-violet-500/20 border border-violet-400/30 flex items-center justify-center text-violet-400 shadow-[0_0_10px_rgba(167,139,250,0.25)]">
+                <FileText className="w-5 h-5" />
+              </div>
+              <span className="text-2xl font-black font-display text-violet-400/40 group-hover:text-violet-400 transition-colors">S</span>
             </div>
-            <h3 className="text-base font-bold text-white">Smart Analytics & Reports</h3>
+            <div>
+              <div className="text-[11px] font-mono text-violet-400 font-bold uppercase tracking-wider">Pillar S</div>
+              <h3 className="text-base font-bold text-white">Class Stream & Tasks</h3>
+            </div>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Automated daily attendance logs, at-risk student warnings, and exportable CSV/PDF summaries for administrators.
+              Google Classroom-style stream for assignments, lecture slide attachments, turn-in workflows with submissions, and teacher feedback with grades.
             </p>
           </div>
         </div>

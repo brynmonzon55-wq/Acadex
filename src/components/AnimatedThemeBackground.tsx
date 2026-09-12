@@ -22,26 +22,52 @@ const NIGHT_STARS = Array.from({ length: 16 }, (_, i) => {
 });
 
 // -------------------------------------------------------------
-// 2. CYBERPUNK PARTICLES (Optimized count: 8 sleek particles)
+// 2. CYBERPUNK PARTICLES & DATA MOTES (Lively Cyberpunk/Default Theme)
 // -------------------------------------------------------------
 const CYBERPUNK_COLORS = [
-  "#00f0ff",
-  "#ff007f",
-  "#a855f7",
-  "#06b6d4",
+  "#00f0ff", // Electric Cyan
+  "#ff007f", // Neon Fuchsia
+  "#a855f7", // Cyber Violet
+  "#06b6d4", // Sky Cyan
+  "#3b82f6", // Neon Blue
+  "#10b981", // Matrix Emerald
+  "#ec4899", // Laser Pink
+  "#f59e0b", // Amber Glow
 ];
 
-const CYBERPUNK_PARTICLES = Array.from({ length: 8 }, (_, i) => {
-  const size = 3 + (i % 3);
+const CYBERPUNK_PARTICLES = Array.from({ length: 36 }, (_, i) => {
+  const size = 2.5 + (i % 4) * 1.5;
   const color = CYBERPUNK_COLORS[i % CYBERPUNK_COLORS.length];
-  const left = `${(i * 27 + 9) % 92}%`;
-  const top = `${(i * 37 + 15) % 85}%`;
-  const duration = `${6.0 + (i % 3) * 2.0}s`;
-  const delay = `${(i * 0.6) % 3}s`;
-  const xMove = i % 2 === 0 ? "20px" : "-20px";
-  const yMove = "-30px";
+  const left = `${(i * 13 + 4) % 96}%`;
+  const top = `${(i * 17 + 6) % 92}%`;
+  const duration = `${5.0 + (i % 5) * 1.8}s`;
+  const delay = `${(i * 0.4) % 5}s`;
+  const xDist = (i % 3 === 0 ? 28 : i % 3 === 1 ? -24 : 18) + (i % 2 === 0 ? 8 : -8);
+  const yDist = (i % 2 === 0 ? -38 : -22) - (i % 4) * 6;
+  const glowBlur = (i % 3 === 0 ? 6 : 3);
 
-  return { id: i, size, color, left, top, duration, delay, xMove, yMove };
+  return {
+    id: i,
+    size,
+    color,
+    left,
+    top,
+    duration,
+    delay,
+    xMove: `${xDist}px`,
+    yMove: `${yDist}px`,
+    glowBlur,
+  };
+});
+
+const CYBERPUNK_DATA_MOTES = Array.from({ length: 18 }, (_, i) => {
+  const size = 2 + (i % 3);
+  const color = i % 2 === 0 ? "#00f0ff" : "#ff007f";
+  const left = `${(i * 19 + 7) % 94}%`;
+  const top = `${(i * 23 + 12) % 88}%`;
+  const duration = `${4.0 + (i % 3) * 1.5}s`;
+  const delay = `${(i * 0.6) % 4}s`;
+  return { id: i, size, color, left, top, duration, delay };
 });
 
 // -------------------------------------------------------------
@@ -232,14 +258,25 @@ function AnimatedThemeBackgroundComponent({
           50% { opacity: 0.9; transform: translate3d(0,0,0) scale(1.15); }
         }
 
-        /* 2. Cyberpunk Particles */
+        /* 2. Cyberpunk Particles & Data Motes */
         @keyframes cyberParticleFast {
           0%, 100% {
-            transform: translate3d(0, 0, 0);
+            transform: translate3d(0, 0, 0) scale(0.9);
             opacity: 0.35;
           }
           50% {
-            transform: translate3d(var(--px), var(--py), 0);
+            transform: translate3d(var(--px), var(--py), 0) scale(1.3);
+            opacity: 0.95;
+          }
+        }
+
+        @keyframes cyberMoteFast {
+          0%, 100% {
+            transform: translate3d(0, 0, 0) scale(0.8);
+            opacity: 0.2;
+          }
+          50% {
+            transform: translate3d(14px, -20px, 0) scale(1.2);
             opacity: 0.85;
           }
         }
@@ -353,22 +390,47 @@ function AnimatedThemeBackgroundComponent({
       )}
 
       {/* ------------------------------------------------------------- */}
-      {/* 1. CYBERPUNK THEME BACKGROUND */}
-      {/* ------------------------------------------------------------- */}
-      {/* 1. CYBERPUNK THEME BACKGROUND (NEON ELECTRIC MOTES) */}
+      {/* 1. CYBERPUNK THEME BACKGROUND (NEON ELECTRIC MOTES & PARTICLES) */}
       {/* ------------------------------------------------------------- */}
       {activeTheme === "default" && (
         <>
           {/* Day Mode Luminous Atmosphere */}
           {!isNight && (
             <>
-              <div className="absolute -top-20 -left-20 w-[300px] sm:w-[420px] h-[300px] sm:h-[420px] rounded-full blur-2xl bg-cyan-500/20" />
-              <div className="absolute top-1/3 -right-20 w-[280px] sm:w-[380px] h-[280px] sm:h-[380px] rounded-full blur-2xl bg-fuchsia-600/20" />
-              <div className="absolute bottom-10 left-1/3 w-[300px] h-[300px] rounded-full blur-2xl bg-purple-600/15" />
+              <div className="absolute -top-20 -left-20 w-[300px] sm:w-[420px] h-[300px] sm:h-[420px] rounded-full blur-2xl bg-cyan-500/20 pointer-events-none" />
+              <div className="absolute top-1/3 -right-20 w-[280px] sm:w-[380px] h-[280px] sm:h-[380px] rounded-full blur-2xl bg-fuchsia-600/20 pointer-events-none" />
+              <div className="absolute bottom-10 left-1/3 w-[300px] h-[300px] rounded-full blur-2xl bg-purple-600/15 pointer-events-none" />
             </>
           )}
 
-          {/* Lightweight Floating Particles */}
+          {/* Night Mode Subtle Ambient Cyber Bloom */}
+          {isNight && (
+            <>
+              <div className="absolute top-1/4 -left-16 w-[360px] h-[360px] rounded-full blur-3xl bg-cyan-500/10 pointer-events-none" />
+              <div className="absolute bottom-1/4 -right-16 w-[360px] h-[360px] rounded-full blur-3xl bg-fuchsia-500/10 pointer-events-none" />
+            </>
+          )}
+
+          {/* Glowing Ambient Data Motes */}
+          {showParticles &&
+            CYBERPUNK_DATA_MOTES.map((m) => (
+              <div
+                key={`cyber-mote-${m.id}`}
+                className="absolute rounded-full pointer-events-none"
+                style={{
+                  left: m.left,
+                  top: m.top,
+                  width: `${m.size}px`,
+                  height: `${m.size}px`,
+                  backgroundColor: m.color,
+                  boxShadow: `0 0 6px ${m.color}`,
+                  animation: `cyberMoteFast ${m.duration} ease-in-out infinite ${m.delay}`,
+                  willChange: "transform, opacity",
+                }}
+              />
+            ))}
+
+          {/* Rich Floating Cyber Neon Particles */}
           {showParticles &&
             CYBERPUNK_PARTICLES.map((p) => (
               <div
@@ -380,6 +442,7 @@ function AnimatedThemeBackgroundComponent({
                   width: `${p.size}px`,
                   height: `${p.size}px`,
                   backgroundColor: p.color,
+                  boxShadow: `0 0 ${p.glowBlur}px ${p.color}`,
                   animation: `cyberParticleFast ${p.duration} ease-in-out infinite ${p.delay}`,
                   ["--px" as string]: p.xMove,
                   ["--py" as string]: p.yMove,

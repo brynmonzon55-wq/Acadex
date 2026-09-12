@@ -1,9 +1,21 @@
 import type { ReactNode } from 'react';
 import { Video } from 'lucide-react';
+import { JoinCodePill } from '../components/JoinCodePill';
 
-// Matches http(s) URLs. Stops at whitespace or `<` so it plays nicely when the
-// surrounding text is later dropped into JSX.
-const URL_PATTERN = /https?:\/\/[^\s<]+/g;
+// Matches http(s) URLs or Join Codes / Join Class mentions (e.g. 🔑 Join Code: RLLKXL (bnfjhnfjh) or Join Class: RLLKXL)
+const COMBINED_PATTERN =
+  /(https?:\/\/[^\s<]+)|((?:🔑\s*)?join\s*(?:code|class|section)\s*:\s*([A-Za-z0-9_-]{4,12})(?:\s*\(([^)\n\r]+)\))?)/gi;
+
+/**
+ * Checks if a string already contains a join code mention or specific code.
+ */
+export function hasJoinCode(text: string | undefined | null, code?: string): boolean {
+  if (!text) return false;
+  if (code) {
+    return text.toUpperCase().includes(code.toUpperCase());
+  }
+  return /join\s*(?:code|class|section)\s*:/i.test(text);
+}
 
 /**
  * Strips common trailing punctuation (periods, commas, closing parens, etc.)
@@ -38,6 +50,10 @@ export interface LinkifyOptions {
    * colored chat bubbles where a hardcoded link color might not read well.
    */
   inheritColor?: boolean;
+  /** Optional callback when a user clicks to join a class via code pill */
+  onJoinCode?: (code: string) => void;
+  /** Optional check if user is already enrolled */
+  isEnrolled?: (code: string) => boolean;
 }
 
 const DEFAULT_LINK_CLASS =
@@ -46,70 +62,95 @@ const INHERIT_LINK_CLASS =
   'underline decoration-2 underline-offset-2 font-bold hover:opacity-80 break-all';
 
 /**
- * Scans plain text for http(s) links and turns them into clickable <a> tags.
- * Google Meet links (meet.google.com/...) are rendered as a small "Join
- * Google Meet" pill so they stand out and work regardless of the theme
- * they're dropped into (dark card, light card, or colored chat bubble).
+ * Scans plain text for http(s) links and class join codes, turning them into
+ * clean interactive pills or clickable <a> tags.
  *
- * Any other text is returned unchanged, so this is safe to wrap around
- * announcements, assignments, comments, submissions, and chat messages.
+ * - Google Meet links (meet.google.com/...) are rendered as clean "Join Google Meet" pills.
+ * - Join Codes (e.g. "🔑 Join Code: RLLKXL (bnfjhnfjh)" or "Join Code: RLLKXL") are rendered
+ *   as clean, clickable Google-Meet-styled green pills with 1-click copy & join.
+ * - Other URLs are converted to standard clickable links.
  */
 export function linkifyText(text: string | undefined | null, options: LinkifyOptions = {}): ReactNode {
   if (!text) return text;
 
-  const matches = text.match(URL_PATTERN);
-  if (!matches) return text;
+  // Quick check before regex matching
+  if (!text.includes('http://') && !text.includes('https://') && !/join\s*(?:code|class|section)/i.test(text)) {
+    return text;
+  }
 
   const linkClassName =
     options.linkClassName ?? (options.inheritColor ? INHERIT_LINK_CLASS : DEFAULT_LINK_CLASS);
 
   const nodes: ReactNode[] = [];
-  let remaining = text;
+  let lastIndex = 0;
   let key = 0;
 
-  for (const rawMatch of matches) {
-    const idx = remaining.indexOf(rawMatch);
-    if (idx === -1) continue;
+  COMBINED_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
 
-    const before = remaining.slice(0, idx);
-    if (before) nodes.push(before);
+  while ((match = COMBINED_PATTERN.exec(text)) !== null) {
+    const matchIndex = match.index;
+    if (matchIndex > lastIndex) {
+      nodes.push(text.slice(lastIndex, matchIndex));
+    }
 
-    const { clean: url, trailing } = trimTrailingPunctuation(rawMatch);
-    const isMeetLink = /^https?:\/\/meet\.google\.com\//i.test(url);
+    const [rawMatch, urlMatch, , joinCode, joinClassName] = match;
 
-    if (isMeetLink) {
+    if (urlMatch) {
+      const { clean: url, trailing } = trimTrailingPunctuation(urlMatch);
+      const isMeetLink = /^https?:\/\/meet\.google\.com\//i.test(url);
+
+      if (isMeetLink) {
+        nodes.push(
+          <a
+            key={`meet-${key++}`}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex items-center gap-1.5 mx-0.5 px-2.5 py-1 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white text-[11px] font-extrabold shadow-sm transition-colors align-middle"
+          >
+            <Video className="h-3 w-3 shrink-0" />
+            Join Google Meet
+          </a>
+        );
+      } else {
+        nodes.push(
+          <a
+            key={`link-${key++}`}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className={linkClassName}
+          >
+            {url}
+          </a>
+        );
+      }
+
+      if (trailing) {
+        nodes.push(trailing);
+      }
+    } else if (joinCode) {
+      const isEnrolled = options.isEnrolled ? options.isEnrolled(joinCode) : false;
       nodes.push(
-        <a
-          key={`link-${key++}`}
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(e) => e.stopPropagation()}
-          className="inline-flex items-center gap-1.5 mx-0.5 px-2.5 py-1 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white text-[11px] font-extrabold shadow-sm transition-colors align-middle"
-        >
-          <Video className="h-3 w-3 shrink-0" />
-          Join Google Meet
-        </a>
-      );
-    } else {
-      nodes.push(
-        <a
-          key={`link-${key++}`}
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(e) => e.stopPropagation()}
-          className={linkClassName}
-        >
-          {url}
-        </a>
+        <JoinCodePill
+          key={`join-${key++}`}
+          code={joinCode}
+          className={joinClassName?.trim()}
+          onJoin={options.onJoinCode}
+          isEnrolled={isEnrolled}
+        />
       );
     }
 
-    if (trailing) nodes.push(trailing);
-    remaining = remaining.slice(idx + rawMatch.length);
+    lastIndex = matchIndex + rawMatch.length;
   }
 
-  if (remaining) nodes.push(remaining);
-  return nodes;
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes.length === 0 ? text : nodes;
 }
