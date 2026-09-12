@@ -10,7 +10,7 @@
 - **E — Engagement**: Class messenger, broadcast announcements, direct 1-on-1 messaging, and threaded post comments.
 - **S — Stream**: Class stream for assignments, homework submissions with file attachments, study materials, and teacher grading.
 
-**Live app:** https://brynmonzon55-wq.github.io/Attendance-Hub
+**Live app:** https://brynmonzon55-wq.github.io/VARDES/
 
 ---
 
